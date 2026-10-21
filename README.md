@@ -49,6 +49,8 @@ There are two migration folders, each with its own job:
 
 Prisma CLI config lives in `prisma7.config.ts`, and migrations use `DIRECT_URL`.
 
+The app's data model (projects, branches, commits, files) is described in [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md).
+
 ## Authentication
 
 Auth endpoints live under `/api/auth` and use HttpOnly cookie sessions. See [docs/AUTH_API.md](docs/AUTH_API.md) for the endpoint contract and [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) for the auth environment variables and Supabase settings.
