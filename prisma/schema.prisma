@@ -1,7 +1,13 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
+// ScoreControl application schema: version control for sheet music.
+// Design notes and rationale: docs/DATABASE_SCHEMA.md
+//
+// Conventions
+// - Models are PascalCase and fields camelCase in Prisma; tables and columns are snake_case in Postgres.
+// - Primary keys are UUIDs. Profile.id is the Supabase auth.users id; the FK to auth.users lives in
+//   supabase/migrations because Prisma's shadow database has no auth schema.
+// - Commits, commit files, and blobs are immutable and never deleted on their own, only with their project.
+//   References to them therefore cascade or set null: Postgres runs NO ACTION checks mid-cascade, which
+//   would make project deletion depend on cascade order. Branches and tags are movable refs.
 
 generator client {
   provider = "prisma-client"
@@ -10,4 +16,308 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// ─── Users ──────────────────────────────────────────────────────────────────
+
+/// Public profile for an auth user. The login handle's source of truth is the private
+/// scorecontrol_auth.usernames registry; `username` mirrors it for joins and URLs (/{username}/{project}).
+model Profile {
+  id          String   @id @db.Uuid
+  username    String   @unique
+  displayName String?  @map("display_name")
+  bio         String?
+  avatarUrl   String?  @map("avatar_url")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  ownedProjects      Project[]       @relation("ProjectOwner")
+  memberships        ProjectMember[] @relation("MemberUser")
+  invitedMembers     ProjectMember[] @relation("MemberInvitedBy")
+  createdBranches    Branch[]
+  commits            Commit[]
+  tags               Tag[]
+  pullRequests       PullRequest[]   @relation("PullRequestAuthor")
+  mergedPullRequests PullRequest[]   @relation("PullRequestMergedBy")
+
+  @@map("profiles")
+}
+
+// ─── Projects and access ────────────────────────────────────────────────────
+
+enum ProjectVisibility {
+  PUBLIC
+  PRIVATE
+
+  @@map("project_visibility")
+}
+
+/// A repository: one piece, arrangement, or collection of scores with its full history.
+model Project {
+  id                    String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerId               String            @map("owner_id") @db.Uuid
+  /// URL segment, lowercase and unique per owner, e.g. "symphony-no-1".
+  slug                  String
+  /// Display name, e.g. "Symphony No. 1 in C minor".
+  name                  String
+  description           String?
+  visibility            ProjectVisibility @default(PRIVATE)
+  /// Null only inside the transaction that creates the project and its first branch.
+  defaultBranchId       String?           @unique @map("default_branch_id") @db.Uuid
+  /// Next per-project pull request number; increment atomically with UPDATE ... RETURNING.
+  nextPullRequestNumber Int               @default(1) @map("next_pull_request_number")
+  createdAt             DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  archivedAt            DateTime?         @map("archived_at") @db.Timestamptz(3)
+
+  owner         Profile         @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  defaultBranch Branch?         @relation("ProjectDefaultBranch", fields: [defaultBranchId], references: [id], onDelete: NoAction)
+  members       ProjectMember[]
+  branches      Branch[]        @relation("ProjectBranches")
+  commits       Commit[]
+  blobs         Blob[]
+  tags          Tag[]
+  pullRequests  PullRequest[]
+
+  @@unique([ownerId, slug])
+  @@map("projects")
+}
+
+/// Collaborator roles. The project owner (Project.ownerId) has every permission and is not a member row.
+enum ProjectRole {
+  /// Manage members and settings, delete branches, plus everything EDITOR can do.
+  ADMIN
+  /// Create branches, commit, open and merge pull requests.
+  EDITOR
+  /// Read a private project.
+  VIEWER
+
+  @@map("project_role")
+}
+
+model ProjectMember {
+  projectId   String      @map("project_id") @db.Uuid
+  userId      String      @map("user_id") @db.Uuid
+  role        ProjectRole
+  invitedById String?     @map("invited_by_id") @db.Uuid
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      Profile  @relation("MemberUser", fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy Profile? @relation("MemberInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+
+  @@id([projectId, userId])
+  @@index([userId])
+  @@map("project_members")
+}
+
+// ─── File content ───────────────────────────────────────────────────────────
+
+/// Detected from content and extension at upload; drives parsing, rendering, and diff support.
+enum FileFormat {
+  /// Uncompressed MusicXML (.musicxml, .xml)
+  MUSICXML
+  /// Compressed MusicXML (.mxl)
+  MXL
+  /// Compressed MuseScore (.mscz)
+  MSCZ
+  /// Uncompressed MuseScore (.mscx)
+  MSCX
+  /// Anything else (PDF parts, audio, notes); stored and versioned but not parsed
+  OTHER
+
+  @@map("file_format")
+}
+
+/// Immutable file content, deduplicated per project by SHA-256 of the raw bytes.
+/// The bytes live in Supabase Storage at `{projectId}/{sha256}`; the database holds metadata only.
+model Blob {
+  id          String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId   String     @map("project_id") @db.Uuid
+  /// Lowercase hex SHA-256 of the stored bytes.
+  sha256      String     @db.Char(64)
+  sizeBytes   BigInt     @map("size_bytes")
+  format      FileFormat
+  contentType String     @map("content_type")
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  project     Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  commitFiles CommitFile[]
+  metadata    ScoreMetadata?
+
+  @@unique([projectId, sha256])
+  @@map("blobs")
+}
+
+/// Musical metadata extracted from a score blob. Optional: written by the parser after upload,
+/// absent for OTHER files or when parsing fails. Because blobs are immutable, history is free.
+model ScoreMetadata {
+  blobId        String   @id @map("blob_id") @db.Uuid
+  title         String?
+  subtitle      String?
+  composer      String?
+  arranger      String?
+  lyricist      String?
+  /// Opening key, e.g. "C minor"; later key changes stay in the file itself.
+  keySignature  String?  @map("key_signature")
+  /// Opening meter, e.g. "4/4".
+  timeSignature String?  @map("time_signature")
+  tempoBpm      Decimal? @map("tempo_bpm") @db.Decimal(6, 2)
+  measureCount  Int?     @map("measure_count")
+  /// Score parts in order: [{ "id": "P1", "name": "Violin I", "instrument": "violin" }].
+  parts         Json?
+  /// Bump when extraction logic changes so stale rows can be re-parsed.
+  parserVersion Int      @map("parser_version")
+  extractedAt   DateTime @default(now()) @map("extracted_at") @db.Timestamptz(3)
+
+  blob Blob @relation(fields: [blobId], references: [id], onDelete: Cascade)
+
+  @@map("score_metadata")
+}
+
+// ─── History ────────────────────────────────────────────────────────────────
+
+/// An immutable snapshot of the project. Its full file list is in CommitFile.
+model Commit {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId String   @map("project_id") @db.Uuid
+  /// Null after the author deletes their account; the commit itself is kept.
+  authorId  String?  @map("author_id") @db.Uuid
+  message   String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  project            Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  author             Profile?       @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  files              CommitFile[]
+  parents            CommitParent[] @relation("CommitChild")
+  children           CommitParent[] @relation("CommitParentOf")
+  branchHeads        Branch[]
+  tags               Tag[]
+  mergedPullRequests PullRequest[]
+
+  @@index([projectId, createdAt])
+  @@index([authorId])
+  @@map("commits")
+}
+
+/// Commit graph edges. A root commit has none, a normal commit one (position 0),
+/// and a merge commit two: position 0 is the branch merged into, position 1 the branch merged in.
+model CommitParent {
+  commitId String @map("commit_id") @db.Uuid
+  parentId String @map("parent_id") @db.Uuid
+  position Int    @db.SmallInt
+
+  commit Commit @relation("CommitChild", fields: [commitId], references: [id], onDelete: Cascade)
+  parent Commit @relation("CommitParentOf", fields: [parentId], references: [id], onDelete: Cascade)
+
+  @@id([commitId, position])
+  @@unique([commitId, parentId])
+  @@index([parentId])
+  @@map("commit_parents")
+}
+
+/// One file in a commit's snapshot. Every commit lists all of its files, not only the changed ones;
+/// a commit's changes are its snapshot compared with its first parent's.
+model CommitFile {
+  commitId String @map("commit_id") @db.Uuid
+  /// Slash-separated path from the project root, e.g. "parts/violin-1.musicxml".
+  path     String
+  blobId   String @map("blob_id") @db.Uuid
+
+  commit Commit @relation(fields: [commitId], references: [id], onDelete: Cascade)
+  blob   Blob   @relation(fields: [blobId], references: [id], onDelete: Cascade)
+
+  @@id([commitId, path])
+  @@index([blobId])
+  @@map("commit_files")
+}
+
+// ─── Refs ───────────────────────────────────────────────────────────────────
+
+/// A movable pointer to a commit. Advance `headCommitId` with compare-and-swap
+/// (UPDATE ... WHERE head_commit_id = <expected>) so concurrent commits cannot overwrite each other.
+model Branch {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId    String   @map("project_id") @db.Uuid
+  name         String
+  /// Null until the first commit on a new, empty project.
+  headCommitId String?  @map("head_commit_id") @db.Uuid
+  createdById  String?  @map("created_by_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  project            Project       @relation("ProjectBranches", fields: [projectId], references: [id], onDelete: Cascade)
+  headCommit         Commit?       @relation(fields: [headCommitId], references: [id], onDelete: SetNull)
+  createdBy          Profile?      @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  defaultForProject  Project?      @relation("ProjectDefaultBranch")
+  sourcePullRequests PullRequest[] @relation("PullRequestSource")
+  targetPullRequests PullRequest[] @relation("PullRequestTarget")
+
+  @@unique([projectId, name])
+  @@map("branches")
+}
+
+/// A named, fixed pointer to a commit, e.g. "premiere-2026-11-14" or "v1.0".
+model Tag {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId   String   @map("project_id") @db.Uuid
+  name        String
+  commitId    String   @map("commit_id") @db.Uuid
+  message     String?
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  commit    Commit   @relation(fields: [commitId], references: [id], onDelete: Cascade)
+  createdBy Profile? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, name])
+  @@map("tags")
+}
+
+// ─── Pull requests ──────────────────────────────────────────────────────────
+
+enum PullRequestStatus {
+  OPEN
+  MERGED
+  CLOSED
+
+  @@map("pull_request_status")
+}
+
+/// A request to merge one branch into another in the same project.
+/// Reviews and comments are not modeled yet; see docs/DATABASE_SCHEMA.md.
+model PullRequest {
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId      String            @map("project_id") @db.Uuid
+  /// Per-project sequence number shown in the UI (#1, #2, ...).
+  number         Int
+  title          String
+  description    String?
+  status         PullRequestStatus @default(OPEN)
+  /// Branch refs are cleared if a branch is deleted; the PR record stays.
+  sourceBranchId String?           @map("source_branch_id") @db.Uuid
+  targetBranchId String?           @map("target_branch_id") @db.Uuid
+  authorId       String?           @map("author_id") @db.Uuid
+  /// The merge commit created on the target branch.
+  mergeCommitId  String?           @map("merge_commit_id") @db.Uuid
+  mergedById     String?           @map("merged_by_id") @db.Uuid
+  mergedAt       DateTime?         @map("merged_at") @db.Timestamptz(3)
+  closedAt       DateTime?         @map("closed_at") @db.Timestamptz(3)
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceBranch Branch?  @relation("PullRequestSource", fields: [sourceBranchId], references: [id], onDelete: SetNull)
+  targetBranch Branch?  @relation("PullRequestTarget", fields: [targetBranchId], references: [id], onDelete: SetNull)
+  author       Profile? @relation("PullRequestAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  mergeCommit  Commit?  @relation(fields: [mergeCommitId], references: [id], onDelete: SetNull)
+  mergedBy     Profile? @relation("PullRequestMergedBy", fields: [mergedById], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, number])
+  @@index([projectId, status])
+  @@index([sourceBranchId])
+  @@index([targetBranchId])
+  @@map("pull_requests")
 }
