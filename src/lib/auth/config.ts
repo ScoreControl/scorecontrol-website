@@ -26,6 +26,7 @@ export function getAppOrigin(): string {
 }
 
 export function getAuthConfig() {
+  
   const origin = getAppOrigin();
   const url = parseOrigin(process.env.NEXT_PUBLIC_SUPABASE_URL);
   // Only Supabase's current key formats; legacy JWT anon/service_role keys are rejected.
