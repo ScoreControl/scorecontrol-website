@@ -282,12 +282,12 @@ Notation: `||` means exactly one, `o|` zero or one, and `o{` zero or more. For e
 | `project_members` | Collaborators with a role. The owner is `projects.owner_id`, not a member row. | Yes |
 | `blobs` | File content metadata: hash, size (max 25 MB), format (default MusicXML), `storage_path` in the private Storage bucket, and `parsed_ast`, a cached parsed score for the diff engine. Unique per project by hash. | No |
 | `score_metadata` | Musical info parsed from a blob. Optional and filled by the parser. | No (re-parse replaces) |
-| `commits` | Saved point in history: message, author, time. | No |
+| `commits` | Saved point in history: message (AI-suggested or user-edited, always set), optional `ai_summary`, author, time. | No |
 | `commit_parents` | History links. 0 parents = first commit, 1 = normal, 2 = merge. | No |
 | `commit_files` | A commit's full snapshot: `(commit, path) → blob`. | No |
 | `branches` | Name → head commit. Unique name per project. | Yes |
 | `tags` | Name → fixed commit. | Rarely |
-| `pull_requests` | Proposal to merge one branch into another, numbered per project. | Yes |
+| `pull_requests` | Proposal to merge one branch into another, numbered per project. `ai_conflict_notes` caches LLM conflict explanations. | Yes |
 
 Supported file formats (`FileFormat`): `MUSICXML`, `MXL` (compressed MusicXML), `MSCZ` (compressed MuseScore), `MSCX` (uncompressed MuseScore), and `OTHER` (PDFs, audio). Every format is versioned the same way; only parsing and rendering depend on the format.
 

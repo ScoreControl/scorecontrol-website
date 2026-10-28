@@ -191,7 +191,10 @@ model Commit {
   projectId String   @map("project_id") @db.Uuid
   /// Null after the author deletes their account; the commit itself is kept.
   authorId  String?  @map("author_id") @db.Uuid
+  /// Always set: the AI-suggested message or what the user edited it to.
   message   String
+  /// Optional plain-English "what changed" summary generated from the structured diff.
+  aiSummary String?  @map("ai_summary")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   project            Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -296,24 +299,27 @@ enum PullRequestStatus {
 /// A request to merge one branch into another in the same project.
 /// Reviews and comments are not modeled yet; see docs/DATABASE_SCHEMA.md.
 model PullRequest {
-  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  projectId      String            @map("project_id") @db.Uuid
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId       String            @map("project_id") @db.Uuid
   /// Per-project sequence number shown in the UI (#1, #2, ...).
-  number         Int
-  title          String
-  description    String?
-  status         PullRequestStatus @default(OPEN)
+  number          Int
+  title           String
+  description     String?
+  status          PullRequestStatus @default(OPEN)
   /// Branch refs are cleared if a branch is deleted; the PR record stays.
-  sourceBranchId String?           @map("source_branch_id") @db.Uuid
-  targetBranchId String?           @map("target_branch_id") @db.Uuid
-  authorId       String?           @map("author_id") @db.Uuid
+  sourceBranchId  String?           @map("source_branch_id") @db.Uuid
+  targetBranchId  String?           @map("target_branch_id") @db.Uuid
+  authorId        String?           @map("author_id") @db.Uuid
   /// The merge commit created on the target branch.
-  mergeCommitId  String?           @map("merge_commit_id") @db.Uuid
-  mergedById     String?           @map("merged_by_id") @db.Uuid
-  mergedAt       DateTime?         @map("merged_at") @db.Timestamptz(3)
-  closedAt       DateTime?         @map("closed_at") @db.Timestamptz(3)
-  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  mergeCommitId   String?           @map("merge_commit_id") @db.Uuid
+  mergedById      String?           @map("merged_by_id") @db.Uuid
+  /// Cached LLM explanations of conflict-resolution trade-offs, keyed by measure and voice,
+  /// e.g. {"measure_12_alto": "Option A keeps parallel motion..."}, so each conflict is explained once.
+  aiConflictNotes Json?             @map("ai_conflict_notes")
+  mergedAt        DateTime?         @map("merged_at") @db.Timestamptz(3)
+  closedAt        DateTime?         @map("closed_at") @db.Timestamptz(3)
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   sourceBranch Branch? @relation("PullRequestSource", fields: [sourceBranchId], references: [id], onDelete: SetNull)
