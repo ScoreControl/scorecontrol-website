@@ -280,7 +280,7 @@ Notation: `||` means exactly one, `o|` zero or one, and `o{` zero or more. For e
 | `users` | Public user record (profile). `id` = Supabase `auth.users.id`. | Yes |
 | `projects` | A repository: a piece, arrangement, or collection. URL is `/{username}/{slug}`. | Yes |
 | `project_members` | Collaborators with a role. The owner is `projects.owner_id`, not a member row. | Yes |
-| `blobs` | File content metadata. Bytes live in Supabase Storage at `{projectId}/{sha256}`. Unique per project by hash. | No |
+| `blobs` | File content metadata: hash, size (max 25 MB), format (default MusicXML), `storage_path` in the private Storage bucket, and `parsed_ast`, a cached parsed score for the diff engine. Unique per project by hash. | No |
 | `score_metadata` | Musical info parsed from a blob. Optional and filled by the parser. | No (re-parse replaces) |
 | `commits` | Saved point in history: message, author, time. | No |
 | `commit_parents` | History links. 0 parents = first commit, 1 = normal, 2 = merge. | No |

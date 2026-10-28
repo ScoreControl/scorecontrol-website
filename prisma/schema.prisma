@@ -131,15 +131,22 @@ enum FileFormat {
 }
 
 /// Immutable file content, deduplicated per project by SHA-256 of the raw bytes.
-/// The bytes live in Supabase Storage at `{projectId}/{sha256}`; the database holds metadata only.
+/// The bytes live in the private Supabase Storage bucket; the database holds metadata only.
 model Blob {
   id          String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   projectId   String     @map("project_id") @db.Uuid
   /// Lowercase hex SHA-256 of the stored bytes.
   sha256      String     @db.Char(64)
-  sizeBytes   BigInt     @map("size_bytes")
-  format      FileFormat
+  /// 1 byte to 25 MB (26,214,400), enforced by a CHECK constraint in the migration and by the bucket limit.
+  sizeBytes   Int        @map("size_bytes")
+  /// MusicXML is the format the diff engine works on; MuseScore support comes later.
+  format      FileFormat @default(MUSICXML)
   contentType String     @map("content_type")
+  /// Object path inside the private Storage bucket, `{projectId}/{sha256}`.
+  storagePath String     @map("storage_path")
+  /// Cached format-independent score model so the diff/merge engine doesn't re-parse the file
+  /// on every comparison. Null until parsed, and always null for OTHER files.
+  parsedAst   Json?      @map("parsed_ast")
   createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
 
   project     Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
