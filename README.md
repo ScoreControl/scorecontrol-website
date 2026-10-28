@@ -49,6 +49,8 @@ There are two migration folders, each with its own job:
 
 Prisma CLI config lives in `prisma7.config.ts`, and migrations use `DIRECT_URL`.
 
+**Order:** apply Supabase migrations first (`npx supabase start` locally), then `npx prisma migrate deploy`. The app's `users` triggers are a Prisma migration that needs the username registry from `supabase/migrations/`. After `npx supabase db reset`, run `npx prisma migrate deploy` again.
+
 The app's data model (projects, branches, commits, files) is described in [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md).
 
 ## Authentication
