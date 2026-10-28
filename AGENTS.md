@@ -85,7 +85,7 @@ PR #2 (`feat/db-schema`) is merged into `main`. Do the remaining work on a new b
 - [ ] Delete the merged `feat/db-schema` and `user-auth` branches.
 - [ ] Ask Oliver to fix the flaky test in `tests/auth/supabase-sdk.test.ts:196` (build the session once and reuse it).
 - [ ] Apply the agreed changes to `prisma/schema.prisma`, then `npx prisma migrate dev --name init_schema`.
-- [ ] Supabase migration: FK `profiles.id → auth.users(id) ON DELETE CASCADE`, a trigger creating the profile and copying the username from `scorecontrol_auth.usernames`, and `ENABLE ROW LEVEL SECURITY` on every new table.
+- [ ] Supabase migration: FK `users.id → auth.users(id) ON DELETE CASCADE`, a trigger creating the `users` row and copying the username from `scorecontrol_auth.usernames`, and `ENABLE ROW LEVEL SECURITY` on every new table.
 - [ ] Create a private Supabase Storage bucket for blobs.
 - [ ] Add a shared Prisma client in `src/lib/db.ts` using `@prisma/adapter-pg` and `DATABASE_URL`.
 - [ ] Turn the embedded-Postgres scenario checks (branching, merge, PR, compare-and-swap, cascades) into a Vitest suite under `tests/db/`.

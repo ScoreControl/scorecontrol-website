@@ -3,7 +3,7 @@
 //
 // Conventions
 // - Models are PascalCase and fields camelCase in Prisma; tables and columns are snake_case in Postgres.
-// - Primary keys are UUIDs. Profile.id is the Supabase auth.users id; the FK to auth.users lives in
+// - Primary keys are UUIDs. User.id is the Supabase auth.users id; the FK to auth.users lives in
 //   supabase/migrations because Prisma's shadow database has no auth schema.
 // - Commits, commit files, and blobs are immutable and never deleted on their own, only with their project.
 //   References to them therefore cascade or set null: Postgres runs NO ACTION checks mid-cascade, which
@@ -20,9 +20,9 @@ datasource db {
 
 // ─── Users ──────────────────────────────────────────────────────────────────
 
-/// Public profile for an auth user. The login handle's source of truth is the private
+/// Public user record (profile) for an auth user. The login handle's source of truth is the private
 /// scorecontrol_auth.usernames registry; `username` mirrors it for joins and URLs (/{username}/{project}).
-model Profile {
+model User {
   id          String   @id @db.Uuid
   username    String   @unique
   displayName String?  @map("display_name")
@@ -40,7 +40,7 @@ model Profile {
   pullRequests       PullRequest[]   @relation("PullRequestAuthor")
   mergedPullRequests PullRequest[]   @relation("PullRequestMergedBy")
 
-  @@map("profiles")
+  @@map("users")
 }
 
 // ─── Projects and access ────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ model Project {
   updatedAt             DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
   archivedAt            DateTime?         @map("archived_at") @db.Timestamptz(3)
 
-  owner         Profile         @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  owner         User            @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   defaultBranch Branch?         @relation("ProjectDefaultBranch", fields: [defaultBranchId], references: [id], onDelete: NoAction)
   members       ProjectMember[]
   branches      Branch[]        @relation("ProjectBranches")
@@ -103,9 +103,9 @@ model ProjectMember {
   createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user      Profile  @relation("MemberUser", fields: [userId], references: [id], onDelete: Cascade)
-  invitedBy Profile? @relation("MemberInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User    @relation("MemberUser", fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User?   @relation("MemberInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
 
   @@id([projectId, userId])
   @@index([userId])
@@ -188,7 +188,7 @@ model Commit {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   project            Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  author             Profile?       @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  author             User?          @relation(fields: [authorId], references: [id], onDelete: SetNull)
   files              CommitFile[]
   parents            CommitParent[] @relation("CommitChild")
   children           CommitParent[] @relation("CommitParentOf")
@@ -249,7 +249,7 @@ model Branch {
 
   project            Project       @relation("ProjectBranches", fields: [projectId], references: [id], onDelete: Cascade)
   headCommit         Commit?       @relation(fields: [headCommitId], references: [id], onDelete: SetNull)
-  createdBy          Profile?      @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdBy          User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
   defaultForProject  Project?      @relation("ProjectDefaultBranch")
   sourcePullRequests PullRequest[] @relation("PullRequestSource")
   targetPullRequests PullRequest[] @relation("PullRequestTarget")
@@ -268,9 +268,9 @@ model Tag {
   createdById String?  @map("created_by_id") @db.Uuid
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  commit    Commit   @relation(fields: [commitId], references: [id], onDelete: Cascade)
-  createdBy Profile? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  commit    Commit  @relation(fields: [commitId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
   @@unique([projectId, name])
   @@map("tags")
@@ -308,12 +308,12 @@ model PullRequest {
   createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt      DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  sourceBranch Branch?  @relation("PullRequestSource", fields: [sourceBranchId], references: [id], onDelete: SetNull)
-  targetBranch Branch?  @relation("PullRequestTarget", fields: [targetBranchId], references: [id], onDelete: SetNull)
-  author       Profile? @relation("PullRequestAuthor", fields: [authorId], references: [id], onDelete: SetNull)
-  mergeCommit  Commit?  @relation(fields: [mergeCommitId], references: [id], onDelete: SetNull)
-  mergedBy     Profile? @relation("PullRequestMergedBy", fields: [mergedById], references: [id], onDelete: SetNull)
+  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceBranch Branch? @relation("PullRequestSource", fields: [sourceBranchId], references: [id], onDelete: SetNull)
+  targetBranch Branch? @relation("PullRequestTarget", fields: [targetBranchId], references: [id], onDelete: SetNull)
+  author       User?   @relation("PullRequestAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  mergeCommit  Commit? @relation(fields: [mergeCommitId], references: [id], onDelete: SetNull)
+  mergedBy     User?   @relation("PullRequestMergedBy", fields: [mergedById], references: [id], onDelete: SetNull)
 
   @@unique([projectId, number])
   @@index([projectId, status])
