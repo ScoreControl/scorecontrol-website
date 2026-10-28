@@ -248,14 +248,18 @@ model CommitFile {
 /// A movable pointer to a commit. Advance `headCommitId` with compare-and-swap
 /// (UPDATE ... WHERE head_commit_id = <expected>) so concurrent commits cannot overwrite each other.
 model Branch {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  projectId    String   @map("project_id") @db.Uuid
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId    String    @map("project_id") @db.Uuid
   name         String
   /// Null until the first commit on a new, empty project.
-  headCommitId String?  @map("head_commit_id") @db.Uuid
-  createdById  String?  @map("created_by_id") @db.Uuid
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  headCommitId String?   @map("head_commit_id") @db.Uuid
+  createdById  String?   @map("created_by_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  /// Set to hide the branch in the UI without deleting it; its commits and PR history stay.
+  /// Active branches are listed WHERE archived_at IS NULL, using the partial index
+  /// idx_branches_project_active (added in the migration SQL).
+  archivedAt   DateTime? @map("archived_at") @db.Timestamptz(3)
 
   project            Project       @relation("ProjectBranches", fields: [projectId], references: [id], onDelete: Cascade)
   headCommit         Commit?       @relation(fields: [headCommitId], references: [id], onDelete: SetNull)

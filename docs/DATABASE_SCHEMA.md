@@ -285,7 +285,7 @@ Notation: `||` means exactly one, `o|` zero or one, and `o{` zero or more. For e
 | `commits` | Saved point in history: message (AI-suggested or user-edited, always set), optional `ai_summary`, author, time. | No |
 | `commit_parents` | History links. 0 parents = first commit, 1 = normal, 2 = merge. | No |
 | `commit_files` | A commit's full snapshot: `(commit, path) → blob`. | No |
-| `branches` | Name → head commit. Unique name per project. | Yes |
+| `branches` | Name → head commit. Unique name per project. `archived_at` hides a branch without deleting it. | Yes |
 | `tags` | Name → fixed commit. | Rarely |
 | `pull_requests` | Proposal to merge one branch into another, numbered per project. `ai_conflict_notes` caches LLM conflict explanations. | Yes |
 
