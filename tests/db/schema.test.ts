@@ -4,7 +4,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Applies the real migrations in deployment order to embedded Postgres:
-// Oliver's auth migration, Prisma's init_schema, then the users trigger migration.
+// Oliver's auth migration (supabase/migrations), then both Prisma migrations.
 // auth.users and the Supabase roles are fixtures.
 const db = new PGlite();
 const read = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
@@ -73,7 +73,7 @@ beforeAll(async () => {
   `);
   await db.transaction((tx) => tx.exec(read("supabase/migrations/20261019000000_auth_usernames.sql")));
   await db.exec(read("prisma/migrations/20261027000000_init_schema/migration.sql"));
-  await db.transaction((tx) => tx.exec(read("supabase/migrations/20261027000100_users_profile_trigger.sql")));
+  await db.exec(read("prisma/migrations/20261027000100_users_sync_triggers/migration.sql"));
 }, 60_000);
 afterAll(async () => { await db.close(); });
 
