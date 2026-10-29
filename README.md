@@ -44,10 +44,12 @@ Requires Node.js 20.19+ (24 recommended).
 
 There are two migration folders, each with its own job:
 
-- **`prisma/`**: the app's own tables in the `public` schema (profiles, repositories, ...). Edit `prisma/schema.prisma`, then run `npx prisma migrate dev --name <change>`.
+- **`prisma/`**: the app's own tables in the `public` schema (users, projects, commits, ...). Edit `prisma/schema.prisma`, then run `npx prisma migrate dev --name <change>`.
 - **`supabase/migrations/`**: SQL that touches Supabase's `auth` schema (e.g. the trigger that creates a profile on sign-up) and Row Level Security. Prisma can't manage these because its shadow database has no `auth` schema. Create one with `npx supabase migration new <name>` and apply it with `npx supabase db push` (run `npx supabase link --project-ref <ref>` once first).
 
 Prisma CLI config lives in `prisma7.config.ts`, and migrations use `DIRECT_URL`.
+
+**Order:** apply Supabase migrations first (`npx supabase start` locally), then `npx prisma migrate deploy`. The app's `users` triggers are a Prisma migration that needs the username registry from `supabase/migrations/`. After `npx supabase db reset`, run `npx prisma migrate deploy` again.
 
 The app's data model (projects, branches, commits, files) is described in [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md).
 

@@ -33,7 +33,7 @@ Keep this file current: update the change log and the branch TODOs with every ch
 | Path | What |
 |---|---|
 | `prisma/schema.prisma` | App tables (source of truth). Explained in `docs/DATABASE_SCHEMA.md`. |
-| `prisma/migrations/` | Generated SQL migrations for app tables (none yet). |
+| `prisma/migrations/` | App table migrations: `init_schema` (tables, 25 MB check, active-branch index, RLS) and `users_sync_triggers` (users rows from the username registry). Apply after `supabase/migrations/`. |
 | `supabase/migrations/` | Hand-written SQL for the `auth` schema, triggers, and RLS. |
 | `src/lib/auth/` | Auth core: config, cookies, guards, rate limiting, routes, usernames. |
 | `src/lib/supabase/` | Supabase server and proxy clients. |
@@ -41,7 +41,7 @@ Keep this file current: update the change log and the branch TODOs with every ch
 | `src/proxy.ts` | Refreshes sessions on page requests. It does not authorize anything. |
 | `src/generated/prisma/` | Generated Prisma client (gitignored). |
 | `docs/` | `AUTH_API.md`, `ENVIRONMENT.md`, `DATABASE_SCHEMA.md` |
-| `tests/` | `auth/` (Vitest), `smoke/` and `integration/` (Playwright) |
+| `tests/` | `auth/` and `db/` (Vitest), `smoke/` and `integration/` (Playwright) |
 
 ## Commands
 
@@ -53,7 +53,9 @@ Print the SQL for the current schema without a database: `npx prisma migrate dif
 
 - Take ownership from the verified `user.id` (`withAuthenticatedRoute` / `requireUser`), never from request fields or usernames.
 - Enable RLS on every new `public` table. Supabase exposes them through its API by default.
-- Prisma can't manage anything in the `auth` schema (its shadow database has none). That goes in `supabase/migrations/`.
+- Prisma can't manage anything in the `auth` schema (its shadow database has none). That goes in `supabase/migrations/`, or in a Prisma migration guarded by `to_regnamespace('auth')` like `users_sync_triggers`.
+- No foreign keys from `public` tables into `auth`: Prisma fails to introspect them (P4002). Use triggers instead.
+- Migration order: `supabase/migrations/` first, then `npx prisma migrate deploy`.
 - Give generated ids and `updated_at` a database default (`dbgenerated("gen_random_uuid()")`, `@default(now())`) so plain SQL inserts work. Prisma's `uuid()` and `@updatedAt` only run inside the Prisma client.
 - Never run `supabase config push`. `prisma migrate reset` deletes the auth RPCs in `public`, so re-apply the Supabase migration afterwards.
 - Never commit `.env.local`. The free-tier Supabase project pauses after about a week idle.
@@ -70,6 +72,13 @@ Print the SQL for the current schema without a database: `npx prisma migrate dif
 
 Newest first.
 
+- **2026-10-27, `feat/init-schema` (Guy):** Applied the team's 10/22 schema decisions:
+    - `profiles` renamed to `users`.
+    - `blobs` gained `storage_path`, `parsed_ast` (JSONB), and an `INTEGER` `size_bytes` capped at 25 MB; `format` defaults to `MUSICXML` and keeps `OTHER`.
+    - `commits.ai_summary`, `pull_requests.ai_conflict_notes`, and `branches.archived_at` with a partial index.
+    - First migrations: `init_schema` (tables, CHECK, index, RLS on every table) and `users_sync_triggers` (`on_username_created` creates users rows; deleting an auth account deletes its row).
+    - No FK from `users` to `auth.users`, because Prisma fails on cross-schema FKs (P4002). The triggers were first a Supabase migration, but `supabase start` applies those before Prisma creates `users`, so they moved into a guarded Prisma migration.
+    - Added `tests/db/schema.test.ts` (10 tests). Verified on Postgres 17: migrations apply, no Prisma drift, and the migration fails clearly if the username registry is missing. 208/208 tests pass.
 - **2026-10-22, `feat/db-schema` (Guy):** Added `ScoreControl_Backend_Status_2026-10-22.pdf` at the repo root, a 3-page meeting handout. It covers status, the 5 technical schema decisions, key and secret handling, RLS status, local Supabase onboarding, the frontend login checklist, and remaining login and schema work.
 - **2026-10-21, `main` (Guy):** Merged PR #2 (`feat/db-schema` → `main`) before the 10/22 meeting, merged without review approval at Guy's call. The schema is in `main` but has no migration, so the database is unchanged. Meeting decisions get applied as follow-up PRs.
 - **2026-10-21, `main` (Oliver van der Kouwe):** Merged PR #1 (`user-auth` → `main`) as merge commit `b9e34b0`, with no changes beyond the 5 reviewed auth commits. The flaky test is still unfixed. PR #2 (`feat/db-schema`) retargeted from `user-auth` to `main`; it applies with no conflicts and needs no rebase.
@@ -77,15 +86,14 @@ Newest first.
 - **2026-10-20, `user-auth` (Oliver van der Kouwe):** Supabase cookie-session auth API (signup, login, logout, me, username, password reset/change, email confirm). Added a private `scorecontrol_auth.usernames` registry with a signup trigger and service-role RPCs, Upstash rate limiting, Vitest and Playwright suites, and `docs/AUTH_API.md` and `docs/ENVIRONMENT.md`. Not merged to `main` yet.
 - **2026-10-15, `main` (Guy):** Scaffolded Next.js 16 with TypeScript, Tailwind, and ESLint. Added Supabase and Prisma 7 (pinned), the Prisma client generated on install, the Supabase CLI linked to the hosted project, the env template, Node engine versions, and README setup instructions.
 
-## Next TODOs: schema follow-ups
+## Current branch TODOs: `feat/init-schema`
 
-PR #2 (`feat/db-schema`) is merged into `main`. Do the remaining work on a new branch off `main`.
-
-- [ ] Apply the 10/22 meeting's answers to the technical questions (main format, LLM output storage, profile trigger, size limits, branch archiving) to `prisma/schema.prisma` and `docs/DATABASE_SCHEMA.md`.
-- [ ] Delete the merged `feat/db-schema` and `user-auth` branches.
+- [x] Apply the 10/22 schema decisions, create the `init_schema` and `users_sync_triggers` migrations, and add `tests/db/`.
+- [x] Delete the merged `feat/db-schema` branch.
+- [ ] Open a PR for `feat/init-schema` → `main` and get it reviewed (it creates real tables once applied).
+- [ ] After merging, apply to the hosted project: `npx supabase db push` (if the username migration isn't there yet), then `npx prisma migrate deploy` with the hosted `DIRECT_URL`.
+- [ ] Delete the merged `user-auth` and `setup` branches (Oliver's and old setup; ask first).
 - [ ] Ask Oliver to fix the flaky test in `tests/auth/supabase-sdk.test.ts:196` (build the session once and reuse it).
-- [ ] Apply the agreed changes to `prisma/schema.prisma`, then `npx prisma migrate dev --name init_schema`.
-- [ ] Supabase migration: FK `profiles.id → auth.users(id) ON DELETE CASCADE`, a trigger creating the profile and copying the username from `scorecontrol_auth.usernames`, and `ENABLE ROW LEVEL SECURITY` on every new table.
-- [ ] Create a private Supabase Storage bucket for blobs.
+- [ ] Create a private Supabase Storage bucket for blobs with a 25 MB file limit.
 - [ ] Add a shared Prisma client in `src/lib/db.ts` using `@prisma/adapter-pg` and `DATABASE_URL`.
-- [ ] Turn the embedded-Postgres scenario checks (branching, merge, PR, compare-and-swap, cascades) into a Vitest suite under `tests/db/`.
+- [ ] Build API routes for projects, uploads, commits, history, and branches (enforce 100 files per project).

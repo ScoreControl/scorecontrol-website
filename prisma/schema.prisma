@@ -3,7 +3,7 @@
 //
 // Conventions
 // - Models are PascalCase and fields camelCase in Prisma; tables and columns are snake_case in Postgres.
-// - Primary keys are UUIDs. Profile.id is the Supabase auth.users id; the FK to auth.users lives in
+// - Primary keys are UUIDs. User.id is the Supabase auth.users id; the FK to auth.users lives in
 //   supabase/migrations because Prisma's shadow database has no auth schema.
 // - Commits, commit files, and blobs are immutable and never deleted on their own, only with their project.
 //   References to them therefore cascade or set null: Postgres runs NO ACTION checks mid-cascade, which
@@ -20,9 +20,9 @@ datasource db {
 
 // ─── Users ──────────────────────────────────────────────────────────────────
 
-/// Public profile for an auth user. The login handle's source of truth is the private
+/// Public user record (profile) for an auth user. The login handle's source of truth is the private
 /// scorecontrol_auth.usernames registry; `username` mirrors it for joins and URLs (/{username}/{project}).
-model Profile {
+model User {
   id          String   @id @db.Uuid
   username    String   @unique
   displayName String?  @map("display_name")
@@ -40,7 +40,7 @@ model Profile {
   pullRequests       PullRequest[]   @relation("PullRequestAuthor")
   mergedPullRequests PullRequest[]   @relation("PullRequestMergedBy")
 
-  @@map("profiles")
+  @@map("users")
 }
 
 // ─── Projects and access ────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ model Project {
   updatedAt             DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
   archivedAt            DateTime?         @map("archived_at") @db.Timestamptz(3)
 
-  owner         Profile         @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  owner         User            @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   defaultBranch Branch?         @relation("ProjectDefaultBranch", fields: [defaultBranchId], references: [id], onDelete: NoAction)
   members       ProjectMember[]
   branches      Branch[]        @relation("ProjectBranches")
@@ -103,9 +103,9 @@ model ProjectMember {
   createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user      Profile  @relation("MemberUser", fields: [userId], references: [id], onDelete: Cascade)
-  invitedBy Profile? @relation("MemberInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User    @relation("MemberUser", fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User?   @relation("MemberInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
 
   @@id([projectId, userId])
   @@index([userId])
@@ -131,15 +131,22 @@ enum FileFormat {
 }
 
 /// Immutable file content, deduplicated per project by SHA-256 of the raw bytes.
-/// The bytes live in Supabase Storage at `{projectId}/{sha256}`; the database holds metadata only.
+/// The bytes live in the private Supabase Storage bucket; the database holds metadata only.
 model Blob {
   id          String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   projectId   String     @map("project_id") @db.Uuid
   /// Lowercase hex SHA-256 of the stored bytes.
   sha256      String     @db.Char(64)
-  sizeBytes   BigInt     @map("size_bytes")
-  format      FileFormat
+  /// 1 byte to 25 MB (26,214,400), enforced by a CHECK constraint in the migration and by the bucket limit.
+  sizeBytes   Int        @map("size_bytes")
+  /// MusicXML is the format the diff engine works on; MuseScore support comes later.
+  format      FileFormat @default(MUSICXML)
   contentType String     @map("content_type")
+  /// Object path inside the private Storage bucket, `{projectId}/{sha256}`.
+  storagePath String     @map("storage_path")
+  /// Cached format-independent score model so the diff/merge engine doesn't re-parse the file
+  /// on every comparison. Null until parsed, and always null for OTHER files.
+  parsedAst   Json?      @map("parsed_ast")
   createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
 
   project     Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -184,11 +191,14 @@ model Commit {
   projectId String   @map("project_id") @db.Uuid
   /// Null after the author deletes their account; the commit itself is kept.
   authorId  String?  @map("author_id") @db.Uuid
+  /// Always set: the AI-suggested message or what the user edited it to.
   message   String
+  /// Optional plain-English "what changed" summary generated from the structured diff.
+  aiSummary String?  @map("ai_summary")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   project            Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  author             Profile?       @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  author             User?          @relation(fields: [authorId], references: [id], onDelete: SetNull)
   files              CommitFile[]
   parents            CommitParent[] @relation("CommitChild")
   children           CommitParent[] @relation("CommitParentOf")
@@ -238,18 +248,22 @@ model CommitFile {
 /// A movable pointer to a commit. Advance `headCommitId` with compare-and-swap
 /// (UPDATE ... WHERE head_commit_id = <expected>) so concurrent commits cannot overwrite each other.
 model Branch {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  projectId    String   @map("project_id") @db.Uuid
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId    String    @map("project_id") @db.Uuid
   name         String
   /// Null until the first commit on a new, empty project.
-  headCommitId String?  @map("head_commit_id") @db.Uuid
-  createdById  String?  @map("created_by_id") @db.Uuid
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  headCommitId String?   @map("head_commit_id") @db.Uuid
+  createdById  String?   @map("created_by_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  /// Set to hide the branch in the UI without deleting it; its commits and PR history stay.
+  /// Active branches are listed WHERE archived_at IS NULL, using the partial index
+  /// idx_branches_project_active (added in the migration SQL).
+  archivedAt   DateTime? @map("archived_at") @db.Timestamptz(3)
 
   project            Project       @relation("ProjectBranches", fields: [projectId], references: [id], onDelete: Cascade)
   headCommit         Commit?       @relation(fields: [headCommitId], references: [id], onDelete: SetNull)
-  createdBy          Profile?      @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdBy          User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
   defaultForProject  Project?      @relation("ProjectDefaultBranch")
   sourcePullRequests PullRequest[] @relation("PullRequestSource")
   targetPullRequests PullRequest[] @relation("PullRequestTarget")
@@ -268,9 +282,9 @@ model Tag {
   createdById String?  @map("created_by_id") @db.Uuid
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  commit    Commit   @relation(fields: [commitId], references: [id], onDelete: Cascade)
-  createdBy Profile? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  commit    Commit  @relation(fields: [commitId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
   @@unique([projectId, name])
   @@map("tags")
@@ -289,31 +303,34 @@ enum PullRequestStatus {
 /// A request to merge one branch into another in the same project.
 /// Reviews and comments are not modeled yet; see docs/DATABASE_SCHEMA.md.
 model PullRequest {
-  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  projectId      String            @map("project_id") @db.Uuid
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId       String            @map("project_id") @db.Uuid
   /// Per-project sequence number shown in the UI (#1, #2, ...).
-  number         Int
-  title          String
-  description    String?
-  status         PullRequestStatus @default(OPEN)
+  number          Int
+  title           String
+  description     String?
+  status          PullRequestStatus @default(OPEN)
   /// Branch refs are cleared if a branch is deleted; the PR record stays.
-  sourceBranchId String?           @map("source_branch_id") @db.Uuid
-  targetBranchId String?           @map("target_branch_id") @db.Uuid
-  authorId       String?           @map("author_id") @db.Uuid
+  sourceBranchId  String?           @map("source_branch_id") @db.Uuid
+  targetBranchId  String?           @map("target_branch_id") @db.Uuid
+  authorId        String?           @map("author_id") @db.Uuid
   /// The merge commit created on the target branch.
-  mergeCommitId  String?           @map("merge_commit_id") @db.Uuid
-  mergedById     String?           @map("merged_by_id") @db.Uuid
-  mergedAt       DateTime?         @map("merged_at") @db.Timestamptz(3)
-  closedAt       DateTime?         @map("closed_at") @db.Timestamptz(3)
-  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  mergeCommitId   String?           @map("merge_commit_id") @db.Uuid
+  mergedById      String?           @map("merged_by_id") @db.Uuid
+  /// Cached LLM explanations of conflict-resolution trade-offs, keyed by measure and voice,
+  /// e.g. {"measure_12_alto": "Option A keeps parallel motion..."}, so each conflict is explained once.
+  aiConflictNotes Json?             @map("ai_conflict_notes")
+  mergedAt        DateTime?         @map("merged_at") @db.Timestamptz(3)
+  closedAt        DateTime?         @map("closed_at") @db.Timestamptz(3)
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime          @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  sourceBranch Branch?  @relation("PullRequestSource", fields: [sourceBranchId], references: [id], onDelete: SetNull)
-  targetBranch Branch?  @relation("PullRequestTarget", fields: [targetBranchId], references: [id], onDelete: SetNull)
-  author       Profile? @relation("PullRequestAuthor", fields: [authorId], references: [id], onDelete: SetNull)
-  mergeCommit  Commit?  @relation(fields: [mergeCommitId], references: [id], onDelete: SetNull)
-  mergedBy     Profile? @relation("PullRequestMergedBy", fields: [mergedById], references: [id], onDelete: SetNull)
+  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceBranch Branch? @relation("PullRequestSource", fields: [sourceBranchId], references: [id], onDelete: SetNull)
+  targetBranch Branch? @relation("PullRequestTarget", fields: [targetBranchId], references: [id], onDelete: SetNull)
+  author       User?   @relation("PullRequestAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  mergeCommit  Commit? @relation(fields: [mergeCommitId], references: [id], onDelete: SetNull)
+  mergedBy     User?   @relation("PullRequestMergedBy", fields: [mergedById], references: [id], onDelete: SetNull)
 
   @@unique([projectId, number])
   @@index([projectId, status])
