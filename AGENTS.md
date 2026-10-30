@@ -72,6 +72,8 @@ Print the SQL for the current schema without a database: `npx prisma migrate dif
 
 Newest first.
 
+- **2026-10-29, `feat/google-sign-in` (Guy):** Added Google sign-in. `GET /api/auth/oauth/google` starts the PKCE flow through Supabase and redirects to Google; the existing `/auth/confirm` finishes it. New Google users have no username until they claim one, and the `users` trigger then creates their row. Added `tests/auth/oauth.test.ts` (6 tests), a disabled `[auth.external.google]` block in `supabase/config.toml` for local testing, and setup steps in `docs/ENVIRONMENT.md` and `docs/AUTH_API.md`. The login/signup button goes on Ryan's pages (`ui/ui+auth`).
+- **2026-10-29, hosted Supabase (Guy):** Confirmed Oliver's username migration was already applied (`supabase db push --dry-run`: up to date). Ran `npx prisma migrate deploy` on the hosted project: both migrations applied, 11 app tables with RLS, and both `users` triggers installed.
 - **2026-10-27, `feat/init-schema` (Guy):** Applied the team's 10/22 schema decisions:
     - `profiles` renamed to `users`.
     - `blobs` gained `storage_path`, `parsed_ast` (JSONB), and an `INTEGER` `size_bytes` capped at 25 MB; `format` defaults to `MUSICXML` and keeps `OTHER`.
@@ -86,14 +88,18 @@ Newest first.
 - **2026-10-20, `user-auth` (Oliver van der Kouwe):** Supabase cookie-session auth API (signup, login, logout, me, username, password reset/change, email confirm). Added a private `scorecontrol_auth.usernames` registry with a signup trigger and service-role RPCs, Upstash rate limiting, Vitest and Playwright suites, and `docs/AUTH_API.md` and `docs/ENVIRONMENT.md`. Not merged to `main` yet.
 - **2026-10-15, `main` (Guy):** Scaffolded Next.js 16 with TypeScript, Tailwind, and ESLint. Added Supabase and Prisma 7 (pinned), the Prisma client generated on install, the Supabase CLI linked to the hosted project, the env template, Node engine versions, and README setup instructions.
 
-## Current branch TODOs: `feat/init-schema`
+## Current branch TODOs: `feat/google-sign-in`
 
-- [x] Apply the 10/22 schema decisions, create the `init_schema` and `users_sync_triggers` migrations, and add `tests/db/`.
-- [x] Delete the merged `feat/db-schema` branch.
-- [ ] Open a PR for `feat/init-schema` → `main` and get it reviewed (it creates real tables once applied).
-- [ ] After merging, apply to the hosted project: `npx supabase db push` (if the username migration isn't there yet), then `npx prisma migrate deploy` with the hosted `DIRECT_URL`.
-- [ ] Delete the merged `user-auth` and `setup` branches (Oliver's and old setup; ask first).
-- [ ] Ask Oliver to fix the flaky test in `tests/auth/supabase-sdk.test.ts:196` (build the session once and reuse it).
-- [ ] Create a private Supabase Storage bucket for blobs with a 25 MB file limit.
-- [ ] Add a shared Prisma client in `src/lib/db.ts` using `@prisma/adapter-pg` and `DATABASE_URL`.
-- [ ] Build API routes for projects, uploads, commits, history, and branches (enforce 100 files per project).
+- [x] Start route, tests, local config, and docs for Google sign-in.
+- [ ] Guy: create the Google OAuth client (redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`) and enable Google in Supabase → Authentication → Sign In / Providers.
+- [ ] Guy: add `http://localhost:3000/auth/confirm` to Supabase → Authentication → URL Configuration → Redirect URLs.
+- [ ] Ryan: add `<a href="/api/auth/oauth/google">Continue with Google</a>` to the login and signup pages, and a username form for accounts where `/api/auth/me` returns `username: null`.
+- [ ] Open a PR for `feat/google-sign-in` → `main`.
+
+## Backlog
+
+- [ ] Ryan's 4 fixes on `ui/ui+auth` (lint, `data.data.status`, show API errors, `getCurrentUser()`), then his PR.
+- [ ] Delete the merged `user-auth` and `setup` branches (ask first).
+- [ ] Ask Oliver to fix the flaky test in `tests/auth/supabase-sdk.test.ts:196`.
+- [ ] Custom SMTP before launch (Resend free tier needs a verified domain).
+- [ ] Private Storage bucket for blobs (25 MB limit), shared Prisma client in `src/lib/db.ts`, then project/upload/commit/history/branch API routes (100 files per project).

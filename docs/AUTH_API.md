@@ -17,7 +17,8 @@ A user is `{ id, email, emailVerified, username }`. Every new account has a user
 | `POST /api/auth/forgot-password` | `{ "email" }` | 202 `{ data: { status: "accepted" } }` for known and unknown addresses |
 | `POST /api/auth/reset-password` | `{ "tokenHash", "password" }` | 200 `{ data: { status: "password_updated", otherSessionsRevoked } }`; signs this browser in |
 | `POST /api/auth/password` | `{ "password", "currentPassword"? }` | Same 200 body; requires a session |
-| `GET /auth/confirm` | email link | Signup link: 303 to `/login?status=email_confirmed` (token-hash) or `/` signed in (default template). Default-template reset link: 303 to `/reset-password` signed in |
+| `GET /api/auth/oauth/google` | none (browser navigation) | 303 to Google's consent page via Supabase. Google returns to `/auth/confirm`. Failures: 303 to `/login?error=rate_limited` or `?error=unavailable` |
+| `GET /auth/confirm` | email link or Google return | Signup link: 303 to `/login?status=email_confirmed` (token-hash) or `/` signed in (default template). Default-template reset link: 303 to `/reset-password` signed in. Google return: 303 to `/` signed in (session-only cookies), or `/login?error=confirmation_failed` if cancelled or opened in another browser |
 
 ## Input rules
 
@@ -63,6 +64,7 @@ The frontend owns the forms and the `/login` and `/reset-password` pages. Paths 
 - `/login` should handle `?error=` (`confirmation_failed`, `rate_limited`, `unavailable`), `?status=email_confirmed`, and `?next=`. Validate `next` with `safeReturnPath()` from `paths.ts` before navigating.
 - `/reset-password` is opened directly from the reset email as `/reset-password#token_hash=...`. It reads `token_hash` from `location.hash` and posts it with the new password to `/api/auth/reset-password`. Do not copy the token into the query string, logs, or analytics. Without a fragment, the browser already holds a recovery session (same-browser link): post only `password` to `/api/auth/password`.
 - Call `/api/auth/me` on load and after login/logout. If `username` is null, send the user to a username form that posts to `/api/auth/username`. Same-origin `fetch` sends the cookies automatically.
+- **Google sign-in:** a plain link, not `fetch`: `<a href="/api/auth/oauth/google">Continue with Google</a>`. It works for both sign-in and sign-up. New Google accounts have no username, so `/api/auth/me` returns `username: null` and the frontend must show the username form; their `users` row is created when they claim one. A Google account with the same verified email as an existing password account is linked to it by Supabase.
 
 ## Protecting backend routes and pages
 
