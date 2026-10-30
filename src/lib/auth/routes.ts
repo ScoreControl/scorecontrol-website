@@ -1,10 +1,11 @@
 import "server-only";
 import { NextResponse, type NextRequest } from "next/server";
 import { createAuthContext, createEphemeralClient, type AuthContext } from "@/lib/supabase/server";
-import { getAppOrigin } from "./config";
+import { getAppOrigin, getAuthConfig } from "./config";
 import { createAuthDeadline } from "./deadline";
 import {
-  AuthHttpError, invalidCredentials, isDuplicateAccount, isInvalidSession, providerError, unauthenticated, usernameTaken,
+  AuthHttpError, invalidCredentials, isDuplicateAccount, isInvalidSession, providerError, unauthenticated, unavailable,
+  usernameTaken,
 } from "./errors";
 import { authJson, errorResponse, logAuthFailure, noStore, readJson } from "./http";
 import { claimUsername, findUsernameAccount, resolveLoginIdentity } from "./usernames";
@@ -178,6 +179,48 @@ export async function handleConfirm(request: NextRequest) {
     // Credentials never appear in redirects or logs.
     return redirect(loginPath({ error: callbackFailure(error) }));
   }
+}
+
+/** Social sign-in providers enabled in the Supabase dashboard. */
+export type OAuthProvider = "google";
+
+/**
+ * Starts social sign-in. Opened by browser navigation (a link), not fetch: it redirects to the
+ * provider's consent page. The SDK stores the PKCE code verifier in an HttpOnly cookie, so only
+ * this browser can finish the sign-in. The provider returns to /auth/confirm, which exchanges the
+ * code for a session exactly like a same-browser email link. New social accounts have no username
+ * yet; the frontend sends them to the username form (`username: null` from /api/auth/me).
+ */
+export async function handleOAuthStart(request: NextRequest, provider: OAuthProvider) {
+  let context: AuthContext | undefined;
+  let origin: string;
+  try { origin = getAppOrigin(); } catch (error) { return errorResponse(error); }
+  const redirect = (url: string) => {
+    const response = noStore(NextResponse.redirect(new URL(url, origin), 303));
+    response.headers.set("Referrer-Policy", "no-referrer");
+    return context ? context.bridge.apply(response) : response;
+  };
+  try {
+    await enforceRateLimit(request, "login");
+    context = createAuthContext(request);
+    // Session-only cookies, like email-link sign-in; "remember me" is a password-login option.
+    context.bridge.setMode(false);
+    const { data, error } = await context.execute(() => context!.client.auth.signInWithOAuth({
+      provider, options: { redirectTo: `${origin}${CONFIRM_PATH}`, skipBrowserRedirect: true },
+    }));
+    if (error) throw error;
+    // Only ever redirect to our own Supabase project's authorize endpoint.
+    const target = data.url ? new URL(data.url) : undefined;
+    if (!target || target.origin !== getAuthConfig().url) throw unavailable();
+    return redirect(target.toString());
+  } catch (error) {
+    context?.bridge.rollback();
+    return redirect(loginPath({ error: callbackFailure(error) }));
+  }
+}
+
+export function handleGoogleSignIn(request: NextRequest) {
+  return handleOAuthStart(request, "google");
 }
 
 /**
