@@ -72,6 +72,7 @@ Print the SQL for the current schema without a database: `npx prisma migrate dif
 
 Newest first.
 
+- **2026-10-30, `feat/google-sign-in` (Guy):** Added `ScoreControl_Backend_Progress_2026-10-30.pdf` at the repo root, a 2-page progress update: live database, 10/22 schema decisions, Google sign-in status, login/frontend status, and next steps.
 - **2026-10-29, `feat/google-sign-in` (Guy):** Added Google sign-in. `GET /api/auth/oauth/google` starts the PKCE flow through Supabase and redirects to Google; the existing `/auth/confirm` finishes it. New Google users have no username until they claim one, and the `users` trigger then creates their row. Added `tests/auth/oauth.test.ts` (6 tests), a disabled `[auth.external.google]` block in `supabase/config.toml` for local testing, and setup steps in `docs/ENVIRONMENT.md` and `docs/AUTH_API.md`. The login/signup button goes on Ryan's pages (`ui/ui+auth`).
 - **2026-10-29, hosted Supabase (Guy):** Confirmed Oliver's username migration was already applied (`supabase db push --dry-run`: up to date). Ran `npx prisma migrate deploy` on the hosted project: both migrations applied, 11 app tables with RLS, and both `users` triggers installed.
 - **2026-10-27, `feat/init-schema` (Guy):** Applied the team's 10/22 schema decisions:
