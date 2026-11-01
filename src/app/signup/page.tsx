@@ -2,8 +2,11 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 export default function SignupPage() {
+  const router = useRouter();
+
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -26,18 +29,24 @@ export default function SignupPage() {
       });
 
       if (!response.ok) {
-        setError("Unable to create your account. Check your details and try again.");
+        const data = await response.json().catch(() => null);
+        setError(
+          typeof data?.error?.message === "string"
+            ? data.error.message
+            : "Unable to create your account. Check your details and try again.",
+        );
         return;
       }
 
       const data = await response.json();
 
-      if (data.status === "confirmation_required") {
+      if (data.data.status === "confirmation_required") {
         setMessage("Check your email for a confirmation link before signing in.");
         return;
       }
 
-      window.location.assign("/");
+      router.push("/");
+      router.refresh();
     } catch {
       setError("Could not connect. Please try again.");
     } finally {

@@ -2,8 +2,11 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
+  const router = useRouter();
+  
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -29,11 +32,17 @@ export default function LoginPage() {
       });
 
       if (!response.ok) {
-        setError("Unable to sign in. Check your details and try again.");
+        const data = await response.json().catch(() => null);
+        setError(
+          typeof data?.error?.message === "string"
+            ? data.error.message
+            : "Unable to sign in. Check your details and try again.",
+        );
         return;
       }
 
-      window.location.assign("/");
+      router.push("/");
+      router.refresh();
     } catch {
       setError("Could not connect. Please try again.");
     } finally {
