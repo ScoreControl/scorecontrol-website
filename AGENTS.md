@@ -75,6 +75,7 @@ Print the SQL for the current schema without a database: `npx prisma migrate dif
 
 Newest first.
 
+- **2026-11-05, `feat/plugin-auth` (Guy):** Step 4. `POST /api/auth/login` with `client: "plugin"` returns `{ accessToken, refreshToken, expiresAt, user }` through an in-memory Supabase client (no cookies; origin check skipped only for plugin bodies, still checked first for web logins). New `POST /api/auth/refresh` (rotating refresh tokens, `refresh` rate limit 60/5 min). `readJson` takes `{ checkOrigin: false }` for token routes. 283/283 tests pass.
 - **2026-11-05, `feat/api-core` (Guy):** Step 3. `withApiRoute` accepts `Authorization: Bearer` (verified with Supabase `getUser(token)`, no cookies, no origin check, `TOKEN_EXPIRED` read from `exp` before any network call) or falls back to `withAuthenticatedRoute` for cookies. `requireProjectRole` returns 404 for non-members and missing or malformed ids, 403 for low roles. `getIdentity` takes an optional access token. 276/276 tests pass.
 - **2026-11-05, `feat/data-layer` (Guy):** Step 2 of the plugin plan. Migration `20261105000000_plugin_api`: `commits.hash` (lowercase hex, unique per project), `commit_files.role` (`file_role` enum, default `PRIMARY`), `idempotency_keys` (RLS on), and a `branches_name_check` matching the contract. Supabase migration `20261105000000_blobs_bucket` creates the private 25 MB `blobs` bucket. Added `src/lib/db.ts`. 248/248 tests pass. Not applied to the hosted project yet.
 - **2026-11-05, `feat/api-contract` (Guy):** Step 1 of the Nov 2–6 plugin plan. Added `docs/api-contract.md` (the plan's sections 3–8 with the 11/05 decisions: commits get a `hash` column beside the UUID, 100 files counted per snapshot, Claude Haiku for suggestions, MusicXML as the single primary file) and `src/lib/api/contract.ts` with `tests/api/contract.test.ts`. Error responses can now carry `details` next to `fields` (`AuthHttpError` gained a `details` argument). 242/242 tests pass.
@@ -92,7 +93,7 @@ Newest first.
 - **2026-10-20, `user-auth` (Oliver van der Kouwe):** Supabase cookie-session auth API (signup, login, logout, me, username, password reset/change, email confirm). Added a private `scorecontrol_auth.usernames` registry with a signup trigger and service-role RPCs, Upstash rate limiting, Vitest and Playwright suites, and `docs/AUTH_API.md` and `docs/ENVIRONMENT.md`. Not merged to `main` yet.
 - **2026-10-15, `main` (Guy):** Scaffolded Next.js 16 with TypeScript, Tailwind, and ESLint. Added Supabase and Prisma 7 (pinned), the Prisma client generated on install, the Supabase CLI linked to the hosted project, the env template, Node engine versions, and README setup instructions.
 
-## Current branch TODOs: `feat/api-core` (stacked on `feat/data-layer` → `feat/api-contract`)
+## Current branch TODOs: `feat/plugin-auth` (stacked on `feat/api-core` → `feat/data-layer` → `feat/api-contract`)
 
 - [ ] Review `docs/api-contract.md` with the plugin developer and Ryan; open the PR.
 - [ ] Merge Ryan's `ui/ui+auth` PR (his 4 login fixes are pushed, `ec90f2b`).
@@ -100,6 +101,7 @@ Newest first.
 - [ ] Apply to the hosted project: `npx supabase db push`, then `npx prisma migrate deploy`.
 - [x] API core: `withApiRoute` (bearer or cookie), `requireProjectRole`, `apiError`.
 - [ ] Optional: switch the hosted project to asymmetric JWT signing keys, then verify bearer tokens locally with `getClaims`.
-- [ ] Next steps (plan order): plugin login and `/api/auth/refresh` → mock server → read routes → commit route with concurrency test → LLM suggestions → CI → Google sign-in.
+- [x] Plugin login mode and `/api/auth/refresh`.
+- [ ] Next steps (plan order): mock server → read routes → commit route with concurrency test → LLM suggestions → CI → Google sign-in.
 - [ ] Still open from `feat/init-schema`: apply migrations to the hosted project, delete merged branches (ask first), fix the flaky test in `tests/auth/supabase-sdk.test.ts`.
 
