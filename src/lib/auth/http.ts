@@ -49,8 +49,12 @@ export function assertMutationOrigin(request: Request) {
   }
 }
 
-export async function readJson(request: Request): Promise<unknown> {
-  assertMutationOrigin(request);
+/**
+ * Reads a small JSON body. Checks the origin first unless `checkOrigin` is false, which only
+ * token-based routes may use (plugin login and refresh never read or set cookies).
+ */
+export async function readJson(request: Request, { checkOrigin = true } = {}): Promise<unknown> {
+  if (checkOrigin) assertMutationOrigin(request);
   if (request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
     throw new AuthHttpError(415, "UNSUPPORTED_MEDIA_TYPE", "Send an application/json request.");
   }
