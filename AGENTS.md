@@ -80,7 +80,6 @@ Known risks and traps. Update or remove an item when it's resolved.
 - **Commit hashes:** the server computes them from canonical JSON (`docs/api-contract.md` §2). Never accept a hash from the client, and keep `created_at` in the hash identical to the stored value (millisecond precision).
 - **Request body limits:** `readJson` caps JSON at 8 KB (auth only). Multipart commits need their own streaming limit, and serverless hosts may cap bodies well below 25 MB (contract §11, "Large uploads").
 - **Flaky test:** `tests/auth/supabase-sdk.test.ts:196` can fail across a second boundary. Re-run before assuming a real failure.
-- **Two copies of the repo on Guy's machine:** the real repo is `~/projects/scorecontrol-website/scorecontrol-website`; the outer folder is an old setup clone. Work only in the inner one.
 
 ## Git workflow
 
