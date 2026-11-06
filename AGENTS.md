@@ -36,12 +36,13 @@ Keep this file current: update the change log and the branch TODOs with every ch
 | `prisma/migrations/` | App table migrations: `init_schema` (tables, 25 MB check, active-branch index, RLS) and `users_sync_triggers` (users rows from the username registry). Apply after `supabase/migrations/`. |
 | `supabase/migrations/` | Hand-written SQL for the `auth` schema, triggers, and RLS. |
 | `src/lib/auth/` | Auth core: config, cookies, guards, rate limiting, routes, usernames. |
+| `src/lib/api/contract.ts` | Plugin/web API contract: zod schemas, types, error codes. Shared with the mock server; no server-only imports. Written version: `docs/api-contract.md`. |
 | `src/lib/supabase/` | Supabase server and proxy clients. |
 | `src/app/api/auth/*`, `src/app/auth/confirm` | Auth route handlers (thin re-exports of `src/lib/auth/routes.ts`). |
 | `src/proxy.ts` | Refreshes sessions on page requests. It does not authorize anything. |
 | `src/generated/prisma/` | Generated Prisma client (gitignored). |
-| `docs/` | `AUTH_API.md`, `ENVIRONMENT.md`, `DATABASE_SCHEMA.md` |
-| `tests/` | `auth/` and `db/` (Vitest), `smoke/` and `integration/` (Playwright) |
+| `docs/` | `api-contract.md`, `AUTH_API.md`, `ENVIRONMENT.md`, `DATABASE_SCHEMA.md` |
+| `tests/` | `api/`, `auth/`, and `db/` (Vitest), `smoke/` and `integration/` (Playwright) |
 
 ## Commands
 
@@ -72,6 +73,7 @@ Print the SQL for the current schema without a database: `npx prisma migrate dif
 
 Newest first.
 
+- **2026-11-05, `feat/api-contract` (Guy):** Step 1 of the Nov 2–6 plugin plan. Added `docs/api-contract.md` (the plan's sections 3–8 with the 11/05 decisions: commits get a `hash` column beside the UUID, 100 files counted per snapshot, Claude Haiku for suggestions, MusicXML as the single primary file) and `src/lib/api/contract.ts` with `tests/api/contract.test.ts`. Error responses can now carry `details` next to `fields` (`AuthHttpError` gained a `details` argument). 242/242 tests pass.
 - **2026-10-27, `feat/init-schema` (Guy):** Applied the team's 10/22 schema decisions:
     - `profiles` renamed to `users`.
     - `blobs` gained `storage_path`, `parsed_ast` (JSONB), and an `INTEGER` `size_bytes` capped at 25 MB; `format` defaults to `MUSICXML` and keeps `OTHER`.
@@ -86,14 +88,10 @@ Newest first.
 - **2026-10-20, `user-auth` (Oliver van der Kouwe):** Supabase cookie-session auth API (signup, login, logout, me, username, password reset/change, email confirm). Added a private `scorecontrol_auth.usernames` registry with a signup trigger and service-role RPCs, Upstash rate limiting, Vitest and Playwright suites, and `docs/AUTH_API.md` and `docs/ENVIRONMENT.md`. Not merged to `main` yet.
 - **2026-10-15, `main` (Guy):** Scaffolded Next.js 16 with TypeScript, Tailwind, and ESLint. Added Supabase and Prisma 7 (pinned), the Prisma client generated on install, the Supabase CLI linked to the hosted project, the env template, Node engine versions, and README setup instructions.
 
-## Current branch TODOs: `feat/init-schema`
+## Current branch TODOs: `feat/api-contract`
 
-- [x] Apply the 10/22 schema decisions, create the `init_schema` and `users_sync_triggers` migrations, and add `tests/db/`.
-- [x] Delete the merged `feat/db-schema` branch.
-- [ ] Open a PR for `feat/init-schema` → `main` and get it reviewed (it creates real tables once applied).
-- [ ] After merging, apply to the hosted project: `npx supabase db push` (if the username migration isn't there yet), then `npx prisma migrate deploy` with the hosted `DIRECT_URL`.
-- [ ] Delete the merged `user-auth` and `setup` branches (Oliver's and old setup; ask first).
-- [ ] Ask Oliver to fix the flaky test in `tests/auth/supabase-sdk.test.ts:196` (build the session once and reuse it).
-- [ ] Create a private Supabase Storage bucket for blobs with a 25 MB file limit.
-- [ ] Add a shared Prisma client in `src/lib/db.ts` using `@prisma/adapter-pg` and `DATABASE_URL`.
-- [ ] Build API routes for projects, uploads, commits, history, and branches (enforce 100 files per project).
+- [ ] Review `docs/api-contract.md` with the plugin developer and Ryan; open the PR.
+- [ ] Merge Ryan's `ui/ui+auth` PR (his 4 login fixes are pushed, `ec90f2b`).
+- [ ] Next steps (plan order): data layer (`commits.hash`, `idempotency_keys`, branch name CHECK, `src/lib/db.ts`, Storage bucket) → API core (`requireUser` with bearer, `requireProjectRole`) → plugin login and `/api/auth/refresh` → mock server → read routes → commit route with concurrency test → LLM suggestions → CI → Google sign-in.
+- [ ] Still open from `feat/init-schema`: apply migrations to the hosted project, delete merged branches (ask first), fix the flaky test in `tests/auth/supabase-sdk.test.ts`.
+
