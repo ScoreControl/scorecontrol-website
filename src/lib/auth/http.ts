@@ -35,6 +35,7 @@ export function errorResponse(error: unknown): NextResponse {
   const response = noStore(NextResponse.json({ error: {
     code: known ? error.code : "INTERNAL_ERROR",
     message: known ? error.message : "The request could not be completed.",
+    ...(known && error.details ? { details: error.details } : {}),
     ...(known && error.fields ? { fields: error.fields } : {}),
     ...(requestId ? { requestId } : {}),
   } }, { status }));
