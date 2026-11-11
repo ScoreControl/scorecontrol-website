@@ -1,13 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import SiteLayout from "../components/SiteLayout";
 
 export default function SignupPage() {
   const router = useRouter();
 
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
@@ -15,8 +16,11 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [username, setUsername] = useState("");
 
-  async function handleSubmit(event: React.SubmitEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (loading) return;
+
     setLoading(true);
     setError("");
     setMessage("");
@@ -30,6 +34,7 @@ export default function SignupPage() {
 
       if (!response.ok) {
         const data = await response.json().catch(() => null);
+
         setError(
           typeof data?.error?.message === "string"
             ? data.error.message
@@ -41,7 +46,9 @@ export default function SignupPage() {
       const data = await response.json();
 
       if (data.data.status === "confirmation_required") {
-        setMessage("Check your email for a confirmation link before signing in.");
+        setMessage(
+          "Check your email for a confirmation link before signing in.",
+        );
         return;
       }
 
@@ -53,122 +60,192 @@ export default function SignupPage() {
       setLoading(false);
     }
   }
+
+  const inputClassName =
+    "h-11 w-full rounded-lg border border-gray-300 bg-white px-3 text-base outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/25";
+
   return (
-    <main className="flex min-h-screen flex-col items-center bg-[#f6f8fa] px-4 py-10 text-[#1f2328]">
-      <Link
-        href="/"
-        className="mb-6 flex items-center gap-2 text-2xl font-semibold tracking-tight"
+    <SiteLayout>
+      <section
+        aria-labelledby="signup-heading"
+        className="mx-auto flex w-full max-w-5xl flex-col items-center"
       >
-        ScoreControl
-      </Link>
-
-      <h1 className="mb-3 text-2xl font-normal text-center">
-        Create your account
-      </h1>
-
-      <p className="mb-6 max-w-md text-center text-sm leading-6 text-[#59636e]">
-        Start your music development journey today.
-      </p>
-
-      <form
-        onSubmit={handleSubmit} 
-        className="w-full max-w-[340px] space-y-4 rounded-lg border border-[#d1d9e0] bg-white p-5"
-      >
-        <div>
-          <label
-            htmlFor="email"
-            className="mb-2 block text-sm font-medium"
-          >
-            Email
-          </label>
-          <input
-            id="email"
-            type="email"
-            placeholder="you@example.com"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-md border border-[#d1d9e0] px-3 py-2 text-sm outline-none focus:border-[#0969da] focus:ring-2 focus:ring-[#0969da]/20"
-          />
-        </div>
-
-        <div>
-          <label
-            htmlFor="password"
-            className="mb-2 block text-sm font-medium"
-          >
-            Password
-          </label>
-          <input
-            id="password"
-            type="password"
-            placeholder="Create a password"
-            autoComplete="new-password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-md border border-[#d1d9e0] px-3 py-2 text-sm outline-none focus:border-[#0969da] focus:ring-2 focus:ring-[#0969da]/20"
-          />
-          <p className="mt-2 text-xs leading-5 text-[#59636e]">
-            Use a strong password to protect your account.
-          </p>
-        </div>
-
-        <div>
-          <label
-            htmlFor="username"
-            className="mb-2 block text-sm font-medium"
-          >
-            Username
-          </label>
-          <input
-            id="username"
-            type="text"
-            placeholder="Choose a username"
-            autoComplete="username"
-            required
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            className="w-full rounded-md border border-[#d1d9e0] px-3 py-2 text-sm outline-none focus:border-[#0969da] focus:ring-2 focus:ring-[#0969da]/20"
-          />
-        </div>
-
-        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-        {message && <p role="status" className="text-sm text-green-700">{message}</p>}
-        
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full rounded-md border border-[#1f883d] bg-[#1f883d] px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-[#1a7f37] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0969da] focus-visible:ring-offset-2"
+        <h1
+          id="signup-heading"
+          className="text-center text-3xl font-bold tracking-tight text-primary sm:text-4xl"
         >
-          {loading ? "Creating account..." : "Create Account"}
-        </button>
+          Create your account.
+        </h1>
 
-        <p className="pt-1 text-xs leading-5 text-[#59636e]">
-          By creating an account, you agree to our{" "}
-          <a href="#" className="text-[#0969da] hover:underline">
-            Terms of Service
-          </a>{" "}
-          and{" "}
-          <a href="#" className="text-[#0969da] hover:underline">
-            Privacy Policy
-          </a>.
+        <p className="mt-3 text-center text-sm text-secondary">
+          Start your music development journey today.
         </p>
-      </form>
 
-      <div className="mt-4 w-full max-w-[340px] rounded-lg border border-[#d1d9e0] bg-white p-4 text-center text-sm">
-        Already have an account?{" "}
-        <Link href="/login" className="text-[#0969da] hover:underline">
-          Sign in
-        </Link>
-      </div>
+        <div className="relative isolate mt-8 flex w-full justify-center py-6 sm:mt-10 sm:py-10">
+          {/* Decorative music graphic */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 -z-10 flex items-center justify-center overflow-hidden"
+          >
+            <div
+              className="h-full w-full max-w-[700px] bg-secondary opacity-30"
+              style={{
+                maskImage: "url('/images/signin_background.png')",
+                maskSize: "contain",
+                maskPosition: "center",
+                maskRepeat: "no-repeat",
+                WebkitMaskImage: "url('/images/signin_background.png')",
+                WebkitMaskSize: "contain",
+                WebkitMaskPosition: "center",
+                WebkitMaskRepeat: "no-repeat",
+              }}
+            />
+          </div>
 
-      <footer className="mt-10 flex flex-wrap justify-center gap-x-4 gap-y-2 text-xs text-[#59636e]">
-        <a href="#" className="hover:text-[#0969da]">Terms</a>
-        <a href="#" className="hover:text-[#0969da]">Privacy</a>
-        <a href="#" className="hover:text-[#0969da]">Contact</a>
-      </footer>
-    </main>
+          <form
+            onSubmit={handleSubmit}
+            aria-busy={loading}
+            className="w-full max-w-[360px] space-y-6 rounded-3xl bg-white px-6 py-8 text-[#1f2328] shadow-[0_16px_32px_rgba(0,0,0,0.18)] sm:px-8 sm:py-10"
+          >
+            <div>
+              <label
+                htmlFor="email"
+                className="mb-2 block text-sm font-medium"
+              >
+                Email
+              </label>
+
+              <input
+                id="email"
+                name="email"
+                type="email"
+                placeholder="you@example.com"
+                autoComplete="email"
+                autoCapitalize="none"
+                spellCheck={false}
+                required
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                className={inputClassName}
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="password"
+                className="mb-2 block text-sm font-medium"
+              >
+                Password
+              </label>
+
+              <input
+                id="password"
+                name="password"
+                type="password"
+                placeholder="Create a password"
+                autoComplete="new-password"
+                aria-describedby="password-help"
+                required
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                className={inputClassName}
+              />
+
+              <p
+                id="password-help"
+                className="mt-2 text-xs leading-5 text-gray-600"
+              >
+                Use a strong password to protect your account.
+              </p>
+            </div>
+
+            <div>
+              <label
+                htmlFor="username"
+                className="mb-2 block text-sm font-medium"
+              >
+                Username
+              </label>
+
+              <input
+                id="username"
+                name="username"
+                type="text"
+                placeholder="Choose a username"
+                autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
+                required
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                className={inputClassName}
+              />
+            </div>
+
+            {error && (
+              <p role="alert" className="text-sm text-red-600">
+                {error}
+              </p>
+            )}
+
+            {message && (
+              <p role="status" className="text-sm text-green-700">
+                {message}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="h-11 w-full rounded-lg bg-secondary text-base font-semibold text-white transition hover:bg-secondary/90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-secondary disabled:cursor-wait disabled:opacity-60"
+            >
+              {loading ? "Creating account..." : "Create Account"}
+            </button>
+
+            <p className="text-xs leading-5 text-gray-600">
+              By creating an account, you agree to our{" "}
+              <a
+                href="#"
+                className="text-secondary underline underline-offset-2"
+              >
+                Terms of Service
+              </a>{" "}
+              and{" "}
+              <a
+                href="#"
+                className="text-secondary underline underline-offset-2"
+              >
+                Privacy Policy
+              </a>
+              .
+            </p>
+
+            <p className="text-center text-xs leading-6">
+              Already have an account?{" "}
+              <Link
+                href="/login"
+                className="text-secondary underline underline-offset-2"
+              >
+                Sign in
+              </Link>
+            </p>
+          </form>
+        </div>
+
+        <footer className="mt-12 flex items-center justify-center gap-4 text-sm font-semibold text-secondary sm:gap-6 sm:text-base">
+          <Link href="/about" className="hover:underline">
+            About
+          </Link>
+          <span aria-hidden="true">|</span>
+          <Link href="/explore" className="hover:underline">
+            Explore
+          </Link>
+          <span aria-hidden="true">|</span>
+          <Link href="/contact" className="hover:underline">
+            Contact
+          </Link>
+        </footer>
+      </section>
+    </SiteLayout>
   );
 }

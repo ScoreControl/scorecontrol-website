@@ -41,7 +41,6 @@ export default function LogoutButton() {
       setLoading(false);
     }
   }
-
   return (
     <div className="mt-4">
       <button

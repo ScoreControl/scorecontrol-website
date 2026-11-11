@@ -3,12 +3,14 @@ import { getCurrentUser } from "@/lib/auth/user";
 
 import LogoutButton from "../app/components/Logoutbutton";
 
+import SiteLayout from "../app/components/SiteLayout";
 
 export default async function Home() {
   const user = await getCurrentUser();
 
   return (
-    <main className="flex min-h-screen flex-col items-center bg-[#f6f8fa] px-4 py-10 text-[#1f2328]">
+    <SiteLayout>
+       <div className="flex min-h-screen flex-col items-center bg-[#f6f8fa] px-4 py-10 text-[#1f2328]">
           <Link href="/" className="mb-6 text-2xl font-semibold tracking-tight">
             ScoreControl
           </Link>
@@ -48,6 +50,7 @@ export default async function Home() {
             <a href="#" className="hover:text-[#0969da]">Privacy</a>
             <a href="#" className="hover:text-[#0969da]">Contact</a>
           </footer>
-        </main>
+        </div>
+    </SiteLayout>
   );
 }
