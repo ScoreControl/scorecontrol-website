@@ -92,6 +92,7 @@ Known risks and traps. Update or remove an item when it's resolved.
 
 Newest first.
 
+- **2026-11-13, `feat/plugin-api` (Guy):** One branch for the rest of the plugin API (contract sections 7–9), one commit per piece. So far: `src/lib/storage.ts` (secret-key client for the private `blobs` bucket), `GET /api/projects/:id/commits/:hash` (detail with files), and `GET /api/projects/:id/blobs/:sha256` (raw bytes, or JSON with `?encoding=base64`). 304/304 tests pass.
 - **2026-11-13, `feat/history` (Guy):** Built `GET /api/projects/:id/branches/:name/commits` (contract section 8): newest first along first parents, `parents` lists every parent, opaque base64url cursor of the next commit's hash. It shares the `branches/[...name]` catch-all with PATCH: a trailing `commits` segment means history. 2 new tests; 302/302 pass.
 - **2026-11-13, `feat/sync` (Guy):** Built `GET /api/projects/:id/sync` (contract section 6). Relation comes from two recursive CTEs over `commit_parents` (all parents, so merges count); `commitsAhead` = commits reachable from the head but not from the local commit; unknown hashes answer `unrelated`. Skipped the mock server (plugin developer not blocked). 3 new tests; 300/300 pass.
 - **2026-11-12, `feat/project-routes` (Guy):** Built section 5 of `docs/api-contract.md`: `GET/POST /api/projects`, `GET /api/projects/:id`, `GET/POST /api/projects/:id/branches`, `PATCH /api/projects/:id/branches/:name` (catch-all route, since branch names can contain `/`). Logic in `src/lib/projects/service.ts`; slugs get `-2`, `-3` suffixes; `format` is accepted but not stored (projects have no format column). Added `tests/api/projects.test.ts` (8 tests on PGlite through `@prisma/adapter-pg`, via the pinned dev dependency `@electric-sql/pglite-socket`). Hosted database confirmed up to date (3 Prisma migrations). 297/297 tests pass. Gotcha: on Windows, run Vitest from `C:\...`; a lowercase `c:\` working directory makes every test file fail with "failed to find the current suite".
@@ -124,8 +125,8 @@ Newest first.
 - [ ] Optional: switch the hosted project to asymmetric JWT signing keys, then verify bearer tokens locally with `getClaims`.
 - [x] Project and branch routes (contract section 5).
 - [x] Sync route (contract section 6).
-- [x] History route (contract section 8).
-- [ ] Next steps (plan order): remaining read routes ( commit detail, blob download) → commit route with concurrency test → LLM suggestions → CI.
+- [x] History, commit detail, and blob download routes (contract section 8).
+- [ ] Next steps (plan order): commit route with concurrency test → LLM suggestions → CI.
 - [ ] Guy: create the Google OAuth client (redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`) and enable Google in Supabase → Authentication → Sign In / Providers.
 - [ ] Guy: add `http://localhost:3000/auth/confirm` to Supabase → Authentication → URL Configuration → Redirect URLs.
 - [ ] Ryan: add `<a href="/api/auth/oauth/google">Continue with Google</a>` to the login and signup pages, and a username form for accounts where `/api/auth/me` returns `username: null`.
