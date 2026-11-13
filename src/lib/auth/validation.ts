@@ -13,6 +13,8 @@ export const loginSchema = z.strictObject({
   email: emailSchema.optional(),
   password,
   rememberMe: z.boolean().default(false),
+  /** "plugin" returns tokens in the body instead of setting cookies (docs/api-contract.md §4). */
+  client: z.enum(["web", "plugin"]).default("web"),
 }).superRefine((value, context) => {
   if (Boolean(value.identifier) === Boolean(value.email)) {
     context.addIssue({ code: "custom", path: ["identifier"], message: "Provide either identifier or email, but not both." });

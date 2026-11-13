@@ -35,6 +35,7 @@ export function errorResponse(error: unknown): NextResponse {
   const response = noStore(NextResponse.json({ error: {
     code: known ? error.code : "INTERNAL_ERROR",
     message: known ? error.message : "The request could not be completed.",
+    ...(known && error.details ? { details: error.details } : {}),
     ...(known && error.fields ? { fields: error.fields } : {}),
     ...(requestId ? { requestId } : {}),
   } }, { status }));
@@ -48,8 +49,12 @@ export function assertMutationOrigin(request: Request) {
   }
 }
 
-export async function readJson(request: Request): Promise<unknown> {
-  assertMutationOrigin(request);
+/**
+ * Reads a small JSON body. Checks the origin first unless `checkOrigin` is false, which only
+ * token-based routes may use (plugin login and refresh never read or set cookies).
+ */
+export async function readJson(request: Request, { checkOrigin = true } = {}): Promise<unknown> {
+  if (checkOrigin) assertMutationOrigin(request);
   if (request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
     throw new AuthHttpError(415, "UNSUPPORTED_MEDIA_TYPE", "Send an application/json request.");
   }

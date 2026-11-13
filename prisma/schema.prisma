@@ -31,14 +31,15 @@ model User {
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  ownedProjects      Project[]       @relation("ProjectOwner")
-  memberships        ProjectMember[] @relation("MemberUser")
-  invitedMembers     ProjectMember[] @relation("MemberInvitedBy")
+  ownedProjects      Project[]        @relation("ProjectOwner")
+  memberships        ProjectMember[]  @relation("MemberUser")
+  invitedMembers     ProjectMember[]  @relation("MemberInvitedBy")
   createdBranches    Branch[]
   commits            Commit[]
   tags               Tag[]
-  pullRequests       PullRequest[]   @relation("PullRequestAuthor")
-  mergedPullRequests PullRequest[]   @relation("PullRequestMergedBy")
+  pullRequests       PullRequest[]    @relation("PullRequestAuthor")
+  mergedPullRequests PullRequest[]    @relation("PullRequestMergedBy")
+  idempotencyKeys    IdempotencyKey[]
 
   @@map("users")
 }
@@ -191,6 +192,9 @@ model Commit {
   projectId String   @map("project_id") @db.Uuid
   /// Null after the author deletes their account; the commit itself is kept.
   authorId  String?  @map("author_id") @db.Uuid
+  /// Public identifier: lowercase hex SHA-256 of the canonical commit JSON (docs/api-contract.md §2),
+  /// computed by the server. Clients address commits by this or a unique 7+ character prefix.
+  hash      String   @db.Char(64)
   /// Always set: the AI-suggested message or what the user edited it to.
   message   String
   /// Optional plain-English "what changed" summary generated from the structured diff.
@@ -206,6 +210,7 @@ model Commit {
   tags               Tag[]
   mergedPullRequests PullRequest[]
 
+  @@unique([projectId, hash])
   @@index([projectId, createdAt])
   @@index([authorId])
   @@map("commits")
@@ -227,13 +232,26 @@ model CommitParent {
   @@map("commit_parents")
 }
 
+/// What a file is for within a commit. Exactly one PRIMARY per commit (enforced by the API).
+enum FileRole {
+  /// The score the diff engine and LLM read.
+  PRIMARY
+  /// Optional MuseScore file for exact restores (reserved; not pushed yet).
+  NATIVE
+  /// Anything else versioned alongside the score.
+  ATTACHMENT
+
+  @@map("file_role")
+}
+
 /// One file in a commit's snapshot. Every commit lists all of its files, not only the changed ones;
 /// a commit's changes are its snapshot compared with its first parent's.
 model CommitFile {
-  commitId String @map("commit_id") @db.Uuid
+  commitId String   @map("commit_id") @db.Uuid
   /// Slash-separated path from the project root, e.g. "parts/violin-1.musicxml".
   path     String
-  blobId   String @map("blob_id") @db.Uuid
+  blobId   String   @map("blob_id") @db.Uuid
+  role     FileRole @default(PRIMARY)
 
   commit Commit @relation(fields: [commitId], references: [id], onDelete: Cascade)
   blob   Blob   @relation(fields: [blobId], references: [id], onDelete: Cascade)
@@ -288,6 +306,27 @@ model Tag {
 
   @@unique([projectId, name])
   @@map("tags")
+}
+
+// ─── API support ────────────────────────────────────────────────────────────
+
+/// Stored result of a commit request sent with an Idempotency-Key header, so a retry after a dropped
+/// connection replays the original response instead of committing twice. Rows older than 24 hours are
+/// ignored and may be deleted.
+model IdempotencyKey {
+  userId         String   @map("user_id") @db.Uuid
+  key            String
+  /// SHA-256 of the request (metadata plus file hashes); the same key with a different request is a conflict.
+  requestHash    String   @map("request_hash") @db.Char(64)
+  responseStatus Int      @map("response_status") @db.SmallInt
+  responseBody   Json     @map("response_body")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, key])
+  @@index([createdAt])
+  @@map("idempotency_keys")
 }
 
 // ─── Pull requests ──────────────────────────────────────────────────────────

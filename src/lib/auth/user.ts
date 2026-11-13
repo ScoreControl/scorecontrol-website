@@ -16,9 +16,12 @@ function safeUser(user: User): AuthIdentity {
   return { id: user.id, email: user.email ?? null, emailVerified: Boolean(user.email_confirmed_at) };
 }
 
-/** Verify the session with the provider. Returns null when signed out; throws on outages. */
-export async function getIdentity(client: SupabaseClient): Promise<AuthIdentity | null> {
-  const { data, error } = await client.auth.getUser();
+/**
+ * Verify the session with the provider. Returns null when signed out; throws on outages.
+ * Pass `accessToken` to verify a bearer token instead of the client's cookie session.
+ */
+export async function getIdentity(client: SupabaseClient, accessToken?: string): Promise<AuthIdentity | null> {
+  const { data, error } = await (accessToken ? client.auth.getUser(accessToken) : client.auth.getUser());
   if (error) {
     if (isInvalidSession(error)) return null;
     throw providerError(error);
