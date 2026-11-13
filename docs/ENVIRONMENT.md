@@ -22,6 +22,11 @@ Public values are inlined at build time, so set them before building each enviro
   - Confirm signup: `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email` (confirms without signing in; the user then logs in).
   - Reset password: `{{ .SiteURL }}/reset-password#token_hash={{ .TokenHash }}`. The token stays in the URL fragment, which browsers never send to a server, so it cannot appear in access logs; it is used only when the user submits a new password.
 - Configure custom SMTP for real users; the default sender is heavily restricted.
+- Google sign-in:
+  1. Google Cloud Console → APIs & Services → Credentials → Create OAuth client ID (Web application). Authorized redirect URI: `https://<project-ref>.supabase.co/auth/v1/callback`. Configure the OAuth consent screen (app name, support email; External, Testing mode is fine during development, with team members added as test users).
+  2. Supabase → Authentication → Sign In / Providers → Google: enable, paste the client ID and secret.
+  3. The redirect allowlist entry `${APP_ORIGIN}/auth/confirm` (above) covers the Google return too.
+  4. Locally: see the `[auth.external.google]` block in `supabase/config.toml` (off by default; credentials go in `supabase/.env`).
 - Do not run `supabase config push` to apply these; it overwrites the hosted project's settings.
 
 ## Username migration
