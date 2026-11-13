@@ -92,6 +92,7 @@ Known risks and traps. Update or remove an item when it's resolved.
 
 Newest first.
 
+- **2026-11-13, `feat/plugin-api` (Guy):** Added `POST /api/projects/:id/commits` (contract section 7) in `src/lib/projects/commit.ts`: multipart snapshot, server-computed blob and commit hashes, branch row locked `FOR UPDATE`, `409 STALE_PARENT` with `commitsAhead`, `newBranch` forks, `422 NO_CHANGES`, and `Idempotency-Key` replay (24 h) stored in the same transaction. Blobs upload to Storage before the transaction (content-addressed, so a rollback only leaves unused bytes). Not done: background parsing into `parsed_ast` (no parser yet). Gotcha: `@prisma/adapter-pg` misreads `timestamptz` values with a non-UTC offset; Supabase runs in UTC, and the PGlite tests now pin UTC. Watch-out: Vercel caps request bodies at 4.5 MB, so large commits will need direct-to-Storage uploads before deploying there. 310/310 tests pass.
 - **2026-11-13, `feat/plugin-api` (Guy):** One branch for the rest of the plugin API (contract sections 7–9), one commit per piece. So far: `src/lib/storage.ts` (secret-key client for the private `blobs` bucket), `GET /api/projects/:id/commits/:hash` (detail with files), and `GET /api/projects/:id/blobs/:sha256` (raw bytes, or JSON with `?encoding=base64`). 304/304 tests pass.
 - **2026-11-13, `feat/history` (Guy):** Built `GET /api/projects/:id/branches/:name/commits` (contract section 8): newest first along first parents, `parents` lists every parent, opaque base64url cursor of the next commit's hash. It shares the `branches/[...name]` catch-all with PATCH: a trailing `commits` segment means history. 2 new tests; 302/302 pass.
 - **2026-11-13, `feat/sync` (Guy):** Built `GET /api/projects/:id/sync` (contract section 6). Relation comes from two recursive CTEs over `commit_parents` (all parents, so merges count); `commitsAhead` = commits reachable from the head but not from the local commit; unknown hashes answer `unrelated`. Skipped the mock server (plugin developer not blocked). 3 new tests; 300/300 pass.
@@ -126,7 +127,8 @@ Newest first.
 - [x] Project and branch routes (contract section 5).
 - [x] Sync route (contract section 6).
 - [x] History, commit detail, and blob download routes (contract section 8).
-- [ ] Next steps (plan order): commit route with concurrency test → LLM suggestions → CI.
+- [x] Commit route with concurrency test (contract section 7).
+- [ ] Next steps (plan order): LLM suggestions → CI.
 - [ ] Guy: create the Google OAuth client (redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`) and enable Google in Supabase → Authentication → Sign In / Providers.
 - [ ] Guy: add `http://localhost:3000/auth/confirm` to Supabase → Authentication → URL Configuration → Redirect URLs.
 - [ ] Ryan: add `<a href="/api/auth/oauth/google">Continue with Google</a>` to the login and signup pages, and a username form for accounts where `/api/auth/me` returns `username: null`.
