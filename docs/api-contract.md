@@ -4,7 +4,7 @@ The API the MuseScore plugin and the web app use to work with projects, branches
 
 The machine-readable version is [`src/lib/api/contract.ts`](../src/lib/api/contract.ts): zod schemas and TypeScript types for every request, response, and error code. **Change both together.** If they disagree, the code is a bug in one of them; ask before picking a side.
 
-Status: **draft for review** by the plugin developer and Ryan. Implemented so far: plugin login and `/api/auth/refresh` (section 4), and bearer-token auth with role checks for project routes. The project routes themselves are not built yet.
+Status: **draft for review** by the plugin developer and Ryan. Implemented so far: plugin login and `/api/auth/refresh` (section 4), bearer-token auth with role checks, and the project and branch routes (section 5). Sync, history, blobs, and commits are not built yet.
 
 ## Contents
 
