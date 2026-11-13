@@ -11,7 +11,9 @@ import { PrismaClient } from "@/generated/prisma/client";
 vi.mock("@/lib/db", () => ({ getDb: () => { throw new Error("tests pass a db explicitly"); } }));
 import * as projects from "@/lib/projects/service";
 import { AuthHttpError } from "@/lib/auth/errors";
-import { createProjectResponseSchema, getProjectResponseSchema, listProjectsResponseSchema, syncQuerySchema, syncResponseSchema, historyQuerySchema, historyResponseSchema } from "@/lib/api/contract";
+import { createProjectResponseSchema, getProjectResponseSchema, listProjectsResponseSchema, syncQuerySchema, syncResponseSchema, historyQuerySchema, historyResponseSchema, commitDetailResponseSchema, commitMetadataSchema, commitResponseSchema, suggestionMetadataSchema, suggestionResponseSchema } from "@/lib/api/contract";
+import { suggestCommitMessage } from "@/lib/projects/suggest";
+import { commitHash, createCommit } from "@/lib/projects/commit";
 
 const pg = new PGlite();
 const server = new PGLiteSocketServer({ db: pg, port: 0, host: "127.0.0.1" });
@@ -46,6 +48,9 @@ const create = (userId: string, name: string, description?: string) =>
 let owner: string, admin: string, editor: string, viewer: string, outsider: string;
 
 beforeAll(async () => {
+  // PGlite defaults to the machine's time zone; Supabase runs in UTC, and @prisma/adapter-pg misreads
+  // timestamptz values with a non-zero offset, so match production.
+  await pg.exec("alter database postgres set timezone to 'UTC'; set timezone to 'UTC';");
   await pg.exec("create role anon nologin; create role authenticated nologin; create role service_role nologin bypassrls;");
   for (const dir of readdirSync(new URL("../../prisma/migrations", import.meta.url)).filter((d) => /^\d/.test(d)).sort()) {
     await pg.exec(read(`prisma/migrations/${dir}/migration.sql`));
@@ -249,5 +254,182 @@ describe("GET /api/projects/:id/branches/:name/commits", () => {
     expect(await failure(history(owner, project.id, "main", { cursor: "bm9wZQ" }))).toBe("400 INVALID_REQUEST");
     expect(await failure(history(owner, project.id, "nope"))).toBe("404 NOT_FOUND");
     expect(await failure(history(outsider, project.id, "main"))).toBe("404 NOT_FOUND");
+  });
+});
+
+describe("GET /api/projects/:id/commits/:hash", () => {
+  it("returns the commit with its files, by full hash or prefix", async () => {
+    const { project } = await create(owner, "Detailed");
+    await member(project.id, viewer, "VIEWER");
+    const sha = createHash("sha256").update("score").digest("hex");
+    const [{ id: blobId }] = (await pg.query<{ id: string }>(
+      "insert into blobs (project_id, sha256, size_bytes, content_type, storage_path) values ($1, $2, 1234, 'application/vnd.recordare.musicxml+xml', $3) returning id",
+      [project.id, sha, `${project.id}/${sha}`])).rows;
+    const hash = await commitOnMain(project.id, "Add score");
+    const [{ id: commitId }] = (await pg.query<{ id: string }>("select id from commits where hash = $1", [hash])).rows;
+    await pg.query("insert into commit_files (commit_id, path, blob_id) values ($1, 'score.musicxml', $2), ($1, 'parts/a.musicxml', $2)", [commitId, blobId]);
+    await pg.query("update commits set ai_summary = 'Adds the score.' where id = $1", [commitId]);
+
+    const result = await projects.commitDetail(viewer, project.id, hash.slice(0, 9), db);
+    expect(commitDetailResponseSchema.parse(result)).toEqual(result);
+    expect(result.commit).toMatchObject({
+      hash, message: "Add score", aiSummary: "Adds the score.", parents: [],
+      files: [
+        { path: "parts/a.musicxml", format: "MUSICXML", role: "primary", sha256: sha, size: 1234 },
+        { path: "score.musicxml", format: "MUSICXML", role: "primary", sha256: sha, size: 1234 },
+      ],
+    });
+    expect(await failure(projects.commitDetail(viewer, project.id, "0000000", db))).toBe("404 NOT_FOUND");
+    expect(await failure(projects.commitDetail(outsider, project.id, hash, db))).toBe("404 NOT_FOUND");
+  });
+});
+
+describe("GET /api/projects/:id/blobs/:sha256", () => {
+  it("returns a project's file from storage and 404s for other projects' files and outsiders", async () => {
+    const { project } = await create(owner, "Files");
+    const other = await create(admin, "Elsewhere");
+    const bytes = new TextEncoder().encode("<score-partwise/>");
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    await pg.query("insert into blobs (project_id, sha256, size_bytes, content_type, storage_path) values ($1, $2, $3, 'application/xml', $4)",
+      [project.id, sha, bytes.byteLength, `${project.id}/${sha}`]);
+    const download = vi.fn(async () => bytes);
+
+    await expect(projects.getBlob(owner, project.id, sha, db, download))
+      .resolves.toEqual({ sha256: sha, size: bytes.byteLength, contentType: "application/xml", bytes });
+    expect(download).toHaveBeenCalledWith(`${project.id}/${sha}`);
+    expect(await failure(projects.getBlob(admin, other.project.id, sha, db, download))).toBe("404 NOT_FOUND");
+    expect(await failure(projects.getBlob(outsider, project.id, sha, db, download))).toBe("404 NOT_FOUND");
+    expect(download).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("POST /api/projects/:id/commits", () => {
+  const enc = (text: string) => new TextEncoder().encode(text);
+  const file = (text: string) => ({ bytes: enc(text), contentType: "" });
+  const meta = (overrides: Record<string, unknown> = {}) => commitMetadataSchema.parse({
+    branch: "main", parentHash: null, message: "Commit", files: [{ field: "f0", path: "score.musicxml" }], ...overrides,
+  });
+  const commit = (userId: string, projectId: string, metadata: ReturnType<typeof meta>, parts: Record<string, ReturnType<typeof file>>,
+    key: string | null = null, upload = vi.fn(async () => {})) =>
+    createCommit(userId, projectId, metadata, new Map(Object.entries(parts)), key, db, upload);
+
+  async function project() {
+    const { project: p } = await create(owner, "Pushy");
+    await member(p.id, editor, "EDITOR");
+    await member(p.id, viewer, "VIEWER");
+    return p.id;
+  }
+
+  it("creates the first commit, uploads new bytes once, and moves the branch head", async () => {
+    const id = await project();
+    const upload = vi.fn(async () => {});
+    const result = await commit(editor, id, meta({ message: "First", aiSummary: "Adds the score." }), { f0: file("<v1/>") }, null, upload);
+
+    expect(commitResponseSchema.parse(result)).toEqual(result);
+    expect(result).toMatchObject({
+      commit: { message: "First", parents: [], author: { id: editor, username: "edith" } },
+      branch: { name: "main", headHash: result.commit.hash, headMessage: "First", archived: false, created: false },
+    });
+    const sha = createHash("sha256").update("<v1/>").digest("hex");
+    expect(upload).toHaveBeenCalledExactlyOnceWith(`${id}/${sha}`, enc("<v1/>"), "application/vnd.recordare.musicxml+xml");
+
+    // The hash is the contract's canonical JSON over the stored fields.
+    const [row] = (await pg.query<{ created_at: string }>("select to_char(created_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') as created_at from commits where hash = $1", [result.commit.hash])).rows;
+    expect(row.created_at).toBe(result.commit.createdAt);
+    expect(commitHash({ parents: [], tree: [["score.musicxml", sha]], message: "First", authorId: editor, createdAt: new Date(result.commit.createdAt) }))
+      .toBe(result.commit.hash);
+    const detail = await projects.commitDetail(viewer, id, result.commit.hash, db);
+    expect(detail.commit).toMatchObject({ aiSummary: "Adds the score.", files: [{ path: "score.musicxml", sha256: sha, size: 5, role: "primary" }] });
+  });
+
+  it("rejects a stale parent with the head's details, so only one of two racing commits wins", async () => {
+    const id = await project();
+    const first = await commit(editor, id, meta(), { f0: file("<v1/>") });
+    const parentHash = first.commit.hash;
+
+    const results = await Promise.allSettled([
+      commit(editor, id, meta({ parentHash, message: "Edith's edit" }), { f0: file("<edith/>") }),
+      commit(owner, id, meta({ parentHash, message: "Olivia's edit" }), { f0: file("<olivia/>") }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const loser = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    const winner = (results.find((r) => r.status === "fulfilled") as PromiseFulfilledResult<Awaited<ReturnType<typeof commit>>>).value;
+    expect(loser.reason).toMatchObject({ status: 409, code: "STALE_PARENT", details: {
+      branch: "main", headHash: winner.commit.hash, headMessage: winner.commit.message, yourParent: parentHash, commitsAhead: 1,
+    } });
+    expect(await failure(commit(editor, id, meta({ parentHash: null }), { f0: file("<x/>") }))).toBe("409 STALE_PARENT");
+  });
+
+  it("forks onto a new branch from an older commit, and rejects taken names", async () => {
+    const id = await project();
+    const c1 = await commit(editor, id, meta(), { f0: file("<v1/>") });
+    await commit(editor, id, meta({ parentHash: c1.commit.hash }), { f0: file("<v2/>") });
+
+    const fork = await commit(editor, id, meta({ parentHash: c1.commit.hash.slice(0, 7), newBranch: { name: "alt" }, message: "Alt take" }), { f0: file("<alt/>") });
+    expect(fork).toMatchObject({ commit: { parents: [c1.commit.hash] }, branch: { name: "alt", headHash: fork.commit.hash, created: true } });
+    expect(await failure(commit(editor, id, meta({ parentHash: c1.commit.hash, newBranch: { name: "alt" } }), { f0: file("<x/>") }))).toBe("409 BRANCH_EXISTS");
+    expect(await failure(commit(editor, id, meta({ newBranch: { name: "nowhere" } }), { f0: file("<x/>") }))).toBe("422 VALIDATION_FAILED");
+  });
+
+  it("treats files as a full snapshot and rejects an unchanged one", async () => {
+    const id = await project();
+    const two = meta({ files: [{ field: "a", path: "score.musicxml" }, { field: "b", path: "notes.txt", format: "OTHER", role: "attachment" }] });
+    const c1 = await commit(editor, id, two, { a: file("<v1/>"), b: file("hi") });
+    expect(await failure(commit(editor, id, { ...two, parentHash: c1.commit.hash }, { a: file("<v1/>"), b: file("hi") }))).toBe("422 NO_CHANGES");
+
+    const c2 = await commit(editor, id, meta({ parentHash: c1.commit.hash, message: "Drop notes" }), { f0: file("<v1/>") });
+    expect((await projects.commitDetail(editor, id, c2.commit.hash, db)).commit.files.map((f) => f.path)).toEqual(["score.musicxml"]);
+  });
+
+  it("replays the stored response for a repeated Idempotency-Key and rejects reuse for another request", async () => {
+    const id = await project();
+    const upload = vi.fn(async () => {});
+    const first = await commit(editor, id, meta(), { f0: file("<v1/>") }, "retry-key-1", upload);
+    await expect(commit(editor, id, meta(), { f0: file("<v1/>") }, "retry-key-1", upload)).resolves.toEqual(first);
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(await failure(commit(editor, id, meta({ message: "Other" }), { f0: file("<v1/>") }, "retry-key-1"))).toBe("409 IDEMPOTENCY_CONFLICT");
+    expect((await projects.history(editor, id, "main", historyQuerySchema.parse({}), db)).commits).toHaveLength(1);
+  });
+
+  it("enforces roles, archived branches, file limits, and declared parts", async () => {
+    const id = await project();
+    expect(await failure(commit(viewer, id, meta(), { f0: file("<v1/>") }))).toBe("403 FORBIDDEN");
+    expect(await failure(commit(outsider, id, meta(), { f0: file("<v1/>") }))).toBe("404 NOT_FOUND");
+    expect(await failure(commit(editor, id, meta(), {}))).toBe("400 INVALID_REQUEST");
+    expect(await failure(commit(editor, id, meta(), { f0: { bytes: new Uint8Array(26_214_401), contentType: "" } }))).toBe("413 FILE_TOO_LARGE");
+    expect(await failure(commit(editor, id, meta({ branch: "nope" }), { f0: file("<v1/>") }))).toBe("404 NOT_FOUND");
+
+    const c1 = await commit(editor, id, meta(), { f0: file("<v1/>") });
+    await projects.createBranch(editor, id, { name: "old", fromHash: c1.commit.hash }, db);
+    await projects.setBranchArchived(owner, id, "old", true, db);
+    expect(await failure(commit(editor, id, meta({ branch: "old", parentHash: c1.commit.hash }), { f0: file("<v2/>") }))).toBe("409 BRANCH_ARCHIVED");
+  });
+});
+
+describe("POST /api/projects/:id/commit-message-suggestions", () => {
+  const xml = (bars: string[]) => new TextEncoder().encode(
+    `<score-partwise><work><work-title>Sonata</work-title></work><part-list><score-part id="P1"><part-name>Violin</part-name></score-part></part-list>` +
+    `<part id="P1">${bars.map((b, i) => `<measure number="${i + 1}">${b}</measure>`).join("")}</part></score-partwise>`);
+  const files = [{ field: "f0", path: "sonata.musicxml" }];
+
+  it("suggests from the title for a first commit and from the bar diff against the parent", async () => {
+    const { project } = await create(owner, "Suggested");
+    await member(project.id, editor, "EDITOR");
+    await member(project.id, viewer, "VIEWER");
+    const v1 = xml(["a", "b", "c"]);
+    const first = await suggestCommitMessage(editor, project.id, suggestionMetadataSchema.parse({ branch: "main", parentHash: null, files }), new Map([["f0", { bytes: v1, contentType: "" }]]), db);
+    expect(suggestionResponseSchema.parse(first)).toEqual(first);
+    expect(first).toMatchObject({ suggestion: "Add Sonata (Violin)", basis: "initial_commit", model: "scorecontrol/rules-v1" });
+
+    const c1 = await createCommit(editor, project.id, commitMetadataSchema.parse({ branch: "main", parentHash: null, message: first.suggestion, files }),
+      new Map([["f0", { bytes: v1, contentType: "" }]]), null, db, vi.fn(async () => {}));
+    const download = vi.fn(async () => v1);
+    const next = await suggestCommitMessage(editor, project.id, suggestionMetadataSchema.parse({ branch: "main", parentHash: c1.commit.hash, files }),
+      new Map([["f0", { bytes: xml(["a", "B", "c", "d"]), contentType: "" }]]), db, download);
+    expect(next).toMatchObject({ suggestion: "Edit bars 2, 4 in Violin; add 1 measure", basis: "simple_diff" });
+    expect(download).toHaveBeenCalledOnce();
+
+    expect(await failure(suggestCommitMessage(viewer, project.id, suggestionMetadataSchema.parse({ branch: "main", parentHash: null, files }),
+      new Map([["f0", { bytes: v1, contentType: "" }]]), db))).toBe("403 FORBIDDEN");
   });
 });

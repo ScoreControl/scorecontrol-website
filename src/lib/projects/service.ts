@@ -1,12 +1,13 @@
 import "server-only";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { getDb } from "@/lib/db";
+import { downloadBlob } from "@/lib/storage";
 import { apiError, notFound } from "@/lib/api/errors";
 import { requireProjectRole } from "@/lib/api/roles";
 import { AuthHttpError } from "@/lib/auth/errors";
 import {
   DEFAULT_BRANCH, type Branch, type CreateProjectResponse, type GetProjectResponse, type ListBranchesResponse,
-  type ListProjectsResponse, type Project, type CommitSummary, type HistoryResponse, SHORT_HASH_LENGTH, type historyQuerySchema, type ProjectRole, type SyncRelation, type SyncResponse,
+  type ListProjectsResponse, type Project, type CommitSummary, type CommitFile, type CommitDetailResponse, type HistoryResponse, SHORT_HASH_LENGTH, type historyQuerySchema, type ProjectRole, type SyncRelation, type SyncResponse,
   type createBranchRequestSchema, type createProjectRequestSchema, type syncQuerySchema,
 } from "@/lib/api/contract";
 import type { z } from "zod";
@@ -16,7 +17,7 @@ import type { z } from "zod";
 type Db = PrismaClient;
 const isUniqueViolation = (error: unknown) => (error as { code?: string } | null)?.code === "P2002";
 
-const branchSelect = {
+export const branchSelect = {
   name: true, archivedAt: true,
   headCommit: { select: { hash: true, message: true } },
 } as const;
@@ -122,7 +123,7 @@ export async function listBranches(userId: string, projectId: string, includeArc
 }
 
 /** Full hash or a unique prefix of 7+ characters -> commit id. */
-export async function resolveCommit(db: Db, projectId: string, hashRef: string) {
+export async function resolveCommit(db: Pick<Db, "commit">, projectId: string, hashRef: string) {
   const matches = await db.commit.findMany({ where: { projectId, hash: { startsWith: hashRef } }, select: { id: true, hash: true }, take: 2 });
   if (matches.length === 0) throw notFound("Commit");
   if (matches.length > 1) throw apiError("AMBIGUOUS_HASH", "That hash prefix matches more than one commit. Use more characters.");
@@ -186,28 +187,36 @@ export async function sync(userId: string, projectId: string, query: z.output<ty
     throw error;
   }
   if (local.id === row.headCommitId) return answer("same");
+  const ahead = await commitsAhead(db, row.headCommitId, local.id);
+  return ahead === null ? answer("unrelated") : answer("behind", ahead);
+}
 
+/**
+ * How many commits the head is past `localId`: commits reachable from the head (through every
+ * parent, so merges count) but not from `localId`. Null when `localId` isn't in the head's history.
+ */
+export async function commitsAhead(db: Pick<Db, "$queryRaw">, headId: string, localId: string): Promise<number | null> {
   const [{ is_ancestor, ahead }] = await db.$queryRaw<{ is_ancestor: boolean; ahead: number }[]>`
     WITH RECURSIVE
       from_head(id) AS (
-        SELECT ${row.headCommitId}::uuid
+        SELECT ${headId}::uuid
         UNION
         SELECT cp.parent_id FROM commit_parents cp JOIN from_head h ON cp.commit_id = h.id
       ),
       from_local(id) AS (
-        SELECT ${local.id}::uuid
+        SELECT ${localId}::uuid
         UNION
         SELECT cp.parent_id FROM commit_parents cp JOIN from_local l ON cp.commit_id = l.id
       )
     SELECT
-      EXISTS (SELECT 1 FROM from_head WHERE id = ${local.id}::uuid) AS is_ancestor,
+      EXISTS (SELECT 1 FROM from_head WHERE id = ${localId}::uuid) AS is_ancestor,
       (SELECT count(*)::int FROM from_head WHERE id NOT IN (SELECT id FROM from_local)) AS ahead`;
-  return is_ancestor ? answer("behind", ahead) : answer("unrelated");
+  return is_ancestor ? ahead : null;
 }
 
 // ─── History (section 8) ────────────────────────────────────────────────────
 
-const summarySelect = {
+export const summarySelect = {
   id: true, hash: true, message: true, createdAt: true,
   author: { select: { id: true, username: true } },
   parents: { select: { parent: { select: { hash: true } } }, orderBy: { position: "asc" } },
@@ -262,4 +271,36 @@ export async function history(userId: string, projectId: string, branchName: str
   const byId = new Map(rows.map((r) => [r.id, r]));
   const next = line[query.limit] ? await db.commit.findUnique({ where: { id: line[query.limit].id }, select: { hash: true } }) : null;
   return { commits: page.map((id) => toCommitSummary(byId.get(id)!)), nextCursor: next ? encodeCursor(next.hash) : null };
+}
+
+// ─── Commit detail and blobs (section 8) ────────────────────────────────────
+
+/** Viewer and up. A commit by full hash or unique 7+ character prefix, with its full file list. */
+export async function commitDetail(userId: string, projectId: string, hashRef: string, db: Db = getDb()): Promise<CommitDetailResponse> {
+  await requireProjectRole(userId, projectId, "viewer", db);
+  const { id } = await resolveCommit(db, projectId, hashRef);
+  const row = await db.commit.findUniqueOrThrow({
+    where: { id },
+    select: {
+      ...summarySelect, aiSummary: true,
+      files: { select: { path: true, role: true, blob: { select: { format: true, sha256: true, sizeBytes: true } } }, orderBy: { path: "asc" } },
+    },
+  });
+  return { commit: {
+    ...toCommitSummary(row), aiSummary: row.aiSummary,
+    files: row.files.map((f) => ({
+      path: f.path, format: f.blob.format, role: f.role.toLowerCase() as CommitFile["role"], sha256: f.blob.sha256, size: f.blob.sizeBytes,
+    })),
+  } };
+}
+
+/** Viewer and up. The blob must belong to this project; bytes come from the private bucket. */
+export async function getBlob(userId: string, projectId: string, sha256: string, db: Db = getDb(),
+  download: (path: string) => Promise<Uint8Array> = downloadBlob) {
+  await requireProjectRole(userId, projectId, "viewer", db);
+  const blob = await db.blob.findUnique({
+    where: { projectId_sha256: { projectId, sha256 } }, select: { sha256: true, sizeBytes: true, contentType: true, storagePath: true },
+  });
+  if (!blob) throw notFound("File");
+  return { sha256: blob.sha256, size: blob.sizeBytes, contentType: blob.contentType, bytes: await download(blob.storagePath) };
 }
