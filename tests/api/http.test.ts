@@ -39,6 +39,8 @@ import * as commitsRoute from "@/app/api/projects/[id]/commits/route";
 import * as commitRoute from "@/app/api/projects/[id]/commits/[hash]/route";
 import * as blobRoute from "@/app/api/projects/[id]/blobs/[sha256]/route";
 import * as suggestRoute from "@/app/api/projects/[id]/commit-message-suggestions/route";
+import * as membersRoute from "@/app/api/projects/[id]/members/route";
+import * as memberRoute from "@/app/api/projects/[id]/members/[userId]/route";
 
 const pg = new PGlite();
 const server = new PGLiteSocketServer({ db: pg, port: 0, host: "127.0.0.1" });
@@ -169,6 +171,22 @@ describe("project API over HTTP", () => {
     const names = async (q: string) => (await body(await branchesRoute.GET(req("GET", `/api/projects/${id}/branches${q}`, { token: VIEWER }), ctx({ id })))).json.data.branches.map((b: { name: string }) => b.name);
     expect(await names("")).toEqual(["edith/take", "main"]);
     expect(await names("?includeArchived=1")).toEqual(["edith/take", "main", "old"]);
+  });
+
+  it("manages members, renames, and deletes a project over HTTP", async () => {
+    const { json } = await body(await projectsRoute.POST(req("POST", "/api/projects", { token: OWNER, json: { name: "Band" } })));
+    const id: string = json.data.project.id;
+    const added = await body(await membersRoute.POST(req("POST", `/api/projects/${id}/members`, { token: OWNER, json: { username: "edith", role: "editor" } }), ctx({ id })));
+    expect(added).toMatchObject({ status: 201, json: { data: { member: { user: { id: editor, username: "edith" }, role: "editor" } } } });
+    expect((await body(await membersRoute.GET(req("GET", `/api/projects/${id}/members`, { token: EDITOR }), ctx({ id })))).json.data.members).toHaveLength(1);
+    expect((await body(await memberRoute.PATCH(req("PATCH", `/api/projects/${id}/members/${editor}`, { token: OWNER, json: { role: "viewer" } }), ctx({ id, userId: editor })))).json.data.member.role).toBe("viewer");
+    expect((await projectRoute.PATCH(req("PATCH", `/api/projects/${id}`, { token: EDITOR, json: { name: "Mine" } }), ctx({ id }))).status).toBe(403);
+    expect((await memberRoute.DELETE(req("DELETE", `/api/projects/${id}/members/${editor}`, { token: EDITOR }), ctx({ id, userId: editor }))).status).toBe(204);
+
+    expect((await body(await projectRoute.PATCH(req("PATCH", `/api/projects/${id}`, { token: OWNER, json: { name: "The Band" } }), ctx({ id })))).json.data.project)
+      .toMatchObject({ name: "The Band", slug: "band" });
+    expect((await projectRoute.DELETE(req("DELETE", `/api/projects/${id}`, { token: OWNER }), ctx({ id }))).status).toBe(204);
+    expect((await projectRoute.GET(req("GET", `/api/projects/${id}`, { token: OWNER }), ctx({ id }))).status).toBe(404);
   });
 
   it("rejects bad auth, outsiders, cross-site cookie writes, and malformed input with contract errors", async () => {
