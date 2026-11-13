@@ -53,6 +53,22 @@ export const createProjectRequestSchema = z.strictObject({
   description: z.string().trim().max(2000).optional(),
 });
 
+/** PATCH /api/projects/:id (admin+). The slug stays fixed so plugin links keep working. */
+export const updateProjectRequestSchema = z.strictObject({
+  name: z.string().trim().min(1).max(100).optional(),
+  description: z.string().trim().max(2000).nullable().optional(),
+}).refine((value) => value.name !== undefined || value.description !== undefined, "Send name or description.");
+
+/** Roles a member row can hold; the owner is not a member. */
+export const memberRoleSchema = z.enum(["viewer", "editor", "admin"]);
+/** POST /api/projects/:id/members */
+export const addMemberRequestSchema = z.strictObject({
+  username: z.string().trim().toLowerCase().min(1).max(39),
+  role: memberRoleSchema,
+});
+/** PATCH /api/projects/:id/members/:userId */
+export const updateMemberRequestSchema = z.strictObject({ role: memberRoleSchema });
+
 export const createBranchRequestSchema = z.strictObject({ name: branchNameSchema, fromHash: hashRefSchema });
 export const updateBranchRequestSchema = z.strictObject({ archived: z.boolean() });
 
@@ -117,6 +133,19 @@ export const clientHeaderSchema = z.string().regex(/^scorecontrol-plugin\/\d+\.\
 export const refreshRequestSchema = z.strictObject({ refreshToken: z.string().min(1).max(2048) });
 
 // ─── Responses ─────────────────────────────────────────────────────────────
+
+export const memberSchema = z.object({
+  user: z.object({ id: z.uuid(), username: z.string() }),
+  role: memberRoleSchema,
+  createdAt: z.iso.datetime(),
+});
+/** GET /api/projects/:id/members */
+export const listMembersResponseSchema = z.object({
+  owner: z.object({ id: z.uuid(), username: z.string() }),
+  members: z.array(memberSchema),
+});
+/** POST and PATCH member routes */
+export const memberResponseSchema = z.object({ member: memberSchema });
 
 export const authorSchema = z.object({ id: z.uuid(), username: z.string().nullable() });
 
@@ -256,6 +285,7 @@ export const API_ERRORS = {
   STALE_PARENT: 409,
   BRANCH_EXISTS: 409,
   BRANCH_ARCHIVED: 409,
+  MEMBER_EXISTS: 409,
   IDEMPOTENCY_CONFLICT: 409,
   FILE_TOO_LARGE: 413,
   TOO_MANY_FILES: 413,
@@ -300,6 +330,11 @@ export type ProjectRole = z.infer<typeof projectRoleSchema>;
 export type FileFormat = z.infer<typeof fileFormatSchema>;
 export type FileRole = z.infer<typeof fileRoleSchema>;
 export type CreateProjectRequest = z.input<typeof createProjectRequestSchema>;
+export type UpdateProjectRequest = z.input<typeof updateProjectRequestSchema>;
+export type AddMemberRequest = z.input<typeof addMemberRequestSchema>;
+export type MemberRole = z.infer<typeof memberRoleSchema>;
+export type Member = z.infer<typeof memberSchema>;
+export type ListMembersResponse = z.infer<typeof listMembersResponseSchema>;
 export type CreateBranchRequest = z.input<typeof createBranchRequestSchema>;
 export type UpdateBranchRequest = z.input<typeof updateBranchRequestSchema>;
 export type CommitMetadata = z.input<typeof commitMetadataSchema>;

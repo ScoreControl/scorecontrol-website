@@ -1,1 +1,1 @@
-export { handleGetProject as GET } from "@/lib/projects/routes";
+export { handleGetProject as GET, handleUpdateProject as PATCH, handleDeleteProject as DELETE } from "@/lib/projects/routes";

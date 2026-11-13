@@ -37,3 +37,17 @@ export async function uploadBlob(storagePath: string, bytes: Uint8Array, content
   const { error } = await storageClient().storage.from(BLOBS_BUCKET).upload(storagePath, bytes, { contentType, upsert: false });
   if (error && !/exists|duplicate/i.test(error.message)) throw unavailable();
 }
+
+/**
+ * Removes every object under `{projectId}/` after the project's rows are deleted. Best effort:
+ * leftover objects are unreachable (no rows point at them) and only cost storage.
+ */
+export async function deleteProjectBlobs(projectId: string): Promise<void> {
+  const bucket = storageClient().storage.from(BLOBS_BUCKET);
+  for (let round = 0; round < 1000; round++) {
+    const { data, error } = await bucket.list(projectId, { limit: 100 });
+    if (error || !data?.length) return;
+    const { error: removeError } = await bucket.remove(data.map((object) => `${projectId}/${object.name}`));
+    if (removeError) return;
+  }
+}

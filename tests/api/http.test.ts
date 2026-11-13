@@ -27,6 +27,7 @@ vi.mock("@/lib/storage", () => ({
   blobPath: (projectId: string, sha: string) => `${projectId}/${sha}`,
   uploadBlob: async (path: string, bytes: Uint8Array) => { state.objects.set(path, bytes); },
   downloadBlob: async (path: string) => state.objects.get(path)!,
+  deleteProjectBlobs: async (projectId: string) => { for (const key of state.objects.keys()) if (key.startsWith(`${projectId}/`)) state.objects.delete(key); },
 }));
 
 import * as projectsRoute from "@/app/api/projects/route";

@@ -5,7 +5,7 @@ import { enforceSubjectLimit } from "@/lib/auth/rate-limit";
 import { validate } from "@/lib/auth/validation";
 import { apiJson, withApiRoute } from "@/lib/api/route";
 import { apiError, notFound } from "@/lib/api/errors";
-import { branchNameSchema, createBranchRequestSchema, blobQuerySchema, commitMetadataSchema, suggestionMetadataSchema, createProjectRequestSchema, idempotencyKeySchema, MAX_FILE_BYTES, MAX_FILES_PER_COMMIT, fullHashSchema, hashRefSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
+import { branchNameSchema, createBranchRequestSchema, blobQuerySchema, commitMetadataSchema, suggestionMetadataSchema, createProjectRequestSchema, updateProjectRequestSchema, idempotencyKeySchema, MAX_FILE_BYTES, MAX_FILES_PER_COMMIT, fullHashSchema, hashRefSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
 import * as service from "./service";
 import { createCommit, type UploadedFile } from "./commit";
 import { suggestCommitMessage } from "./suggest";
@@ -160,4 +160,17 @@ export const handleSuggestCommitMessage = (request: NextRequest, { params }: Ctx
     await enforceSubjectLimit("suggest", caller.id);
     const { metadata, parts } = await readFilesForm(request, suggestionMetadataSchema);
     return apiJson(await suggestCommitMessage(caller.id, id, metadata, parts));
+  });
+
+export const handleUpdateProject = (request: NextRequest, { params }: Ctx<{ id: string }>) =>
+  withApiRoute(request, async (caller) => {
+    const { id } = await params;
+    const input = validate(updateProjectRequestSchema, await body(request));
+    return apiJson(await service.updateProject(caller.id, id, input));
+  });
+
+export const handleDeleteProject = (request: NextRequest, { params }: Ctx<{ id: string }>) =>
+  withApiRoute(request, async (caller) => {
+    await service.deleteProject(caller.id, (await params).id);
+    return new NextResponse(null, { status: 204 });
   });
