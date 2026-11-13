@@ -3,9 +3,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { readJson } from "@/lib/auth/http";
 import { validate } from "@/lib/auth/validation";
 import { apiJson, withApiRoute } from "@/lib/api/route";
-import { notFound } from "@/lib/api/errors";
-import { branchNameSchema, createBranchRequestSchema, blobQuerySchema, createProjectRequestSchema, fullHashSchema, hashRefSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
+import { apiError, notFound } from "@/lib/api/errors";
+import { branchNameSchema, createBranchRequestSchema, blobQuerySchema, commitMetadataSchema, createProjectRequestSchema, idempotencyKeySchema, MAX_FILE_BYTES, MAX_FILES_PER_COMMIT, fullHashSchema, hashRefSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
 import * as service from "./service";
+import { createCommit, type UploadedFile } from "./commit";
 
 // Route handlers for section 5 of docs/api-contract.md. Role checks live in the service.
 
@@ -93,4 +94,49 @@ export const handleBlob = (request: NextRequest, { params }: Ctx<{ id: string; s
     return new NextResponse(Buffer.from(blob.bytes), {
       headers: { "Content-Type": blob.contentType, "Content-Length": String(blob.bytes.byteLength), "X-Content-Type-Options": "nosniff" },
     });
+  });
+
+/** Upper bound on a whole commit request: 100 files of 25 MB each would be too much for one upload. */
+const MAX_COMMIT_BYTES = 4 * MAX_FILE_BYTES;
+
+/**
+ * POST /api/projects/:id/commits: multipart/form-data with a JSON `metadata` part and one part per
+ * file, named by its entry's `field`. The optional Idempotency-Key header makes retries safe.
+ */
+export const handleCreateCommit = (request: NextRequest, { params }: Ctx<{ id: string }>) =>
+  withApiRoute(request, async (caller) => {
+    const { id } = await params;
+    const key = request.headers.get("idempotency-key");
+    if (key !== null && !idempotencyKeySchema.safeParse(key).success) {
+      throw apiError("INVALID_REQUEST", "Idempotency-Key must be 8 to 128 letters, digits, '_' or '-'.");
+    }
+    if (!request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data")) {
+      throw apiError("UNSUPPORTED_MEDIA_TYPE", "Send the commit as multipart/form-data.");
+    }
+    if (Number(request.headers.get("content-length")) > MAX_COMMIT_BYTES) {
+      throw apiError("REQUEST_TOO_LARGE", "The commit is too large to upload in one request.");
+    }
+    let form: FormData;
+    try {
+      form = await request.formData();
+    } catch {
+      throw apiError("INVALID_REQUEST", "Send a valid multipart/form-data body.");
+    }
+    const raw = form.get("metadata");
+    let json: unknown;
+    try {
+      json = JSON.parse(typeof raw === "string" ? raw : raw ? await raw.text() : "");
+    } catch {
+      throw apiError("INVALID_REQUEST", "The metadata part must be JSON.");
+    }
+    const count = (json as { files?: unknown[] } | null)?.files?.length ?? 0;
+    if (count > MAX_FILES_PER_COMMIT) throw apiError("TOO_MANY_FILES", `A commit can hold at most ${MAX_FILES_PER_COMMIT} files.`);
+    const metadata = validate(commitMetadataSchema, json);
+
+    const parts = new Map<string, UploadedFile>();
+    for (const entry of metadata.files) {
+      const part = form.get(entry.field);
+      if (part instanceof Blob) parts.set(entry.field, { bytes: new Uint8Array(await part.arrayBuffer()), contentType: part.type });
+    }
+    return apiJson(await createCommit(caller.id, id, metadata, parts, key), 201);
   });
