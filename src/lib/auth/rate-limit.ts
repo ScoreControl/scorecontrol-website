@@ -6,7 +6,7 @@ import { Redis } from "@upstash/redis";
 import { getAppOrigin } from "./config";
 import { AuthHttpError, rateLimited, unavailable } from "./errors";
 
-type Action = "login" | "signup" | "resend" | "recover" | "confirm" | "refresh";
+type Action = "login" | "signup" | "resend" | "recover" | "confirm" | "refresh" | "commit" | "suggest";
 type Policy = { limit: number; window: "5 m" | "1 h"; ms: number };
 const policies: Record<Action, Policy> = {
   login: { limit: 30, window: "5 m", ms: 5 * 60_000 },
@@ -15,12 +15,17 @@ const policies: Record<Action, Policy> = {
   recover: { limit: 10, window: "1 h", ms: 60 * 60_000 },
   confirm: { limit: 30, window: "5 m", ms: 5 * 60_000 },
   refresh: { limit: 60, window: "5 m", ms: 5 * 60_000 },
+  commit: { limit: 120, window: "5 m", ms: 5 * 60_000 },
+  suggest: { limit: 120, window: "5 m", ms: 5 * 60_000 },
 };
 // Per-account quotas bound distributed guessing/email flooding against one address.
 const subjectPolicies: Partial<Record<Action, Policy>> = {
   login: { limit: 10, window: "5 m", ms: 5 * 60_000 },
   resend: { limit: 3, window: "1 h", ms: 60 * 60_000 },
   recover: { limit: 3, window: "1 h", ms: 60 * 60_000 },
+  // Per user id: uploads and diffing are the expensive project routes.
+  commit: { limit: 60, window: "5 m", ms: 5 * 60_000 },
+  suggest: { limit: 60, window: "5 m", ms: 5 * 60_000 },
 };
 const localBuckets = new Map<string, { count: number; reset: number }>();
 let remote: { signature: string; limits: Map<string, Ratelimit>; redis: Redis } | undefined;

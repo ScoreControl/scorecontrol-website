@@ -1,6 +1,7 @@
 import "server-only";
 import { NextResponse, type NextRequest } from "next/server";
 import { readJson } from "@/lib/auth/http";
+import { enforceSubjectLimit } from "@/lib/auth/rate-limit";
 import { validate } from "@/lib/auth/validation";
 import { apiJson, withApiRoute } from "@/lib/api/route";
 import { apiError, notFound } from "@/lib/api/errors";
@@ -147,6 +148,7 @@ export const handleCreateCommit = (request: NextRequest, { params }: Ctx<{ id: s
     if (key !== null && !idempotencyKeySchema.safeParse(key).success) {
       throw apiError("INVALID_REQUEST", "Idempotency-Key must be 8 to 128 letters, digits, '_' or '-'.");
     }
+    await enforceSubjectLimit("commit", caller.id);
     const { metadata, parts } = await readFilesForm(request, commitMetadataSchema);
     return apiJson(await createCommit(caller.id, id, metadata, parts, key), 201);
   });
@@ -155,6 +157,7 @@ export const handleCreateCommit = (request: NextRequest, { params }: Ctx<{ id: s
 export const handleSuggestCommitMessage = (request: NextRequest, { params }: Ctx<{ id: string }>) =>
   withApiRoute(request, async (caller) => {
     const { id } = await params;
+    await enforceSubjectLimit("suggest", caller.id);
     const { metadata, parts } = await readFilesForm(request, suggestionMetadataSchema);
     return apiJson(await suggestCommitMessage(caller.id, id, metadata, parts));
   });
