@@ -4,7 +4,7 @@ import { readJson } from "@/lib/auth/http";
 import { validate } from "@/lib/auth/validation";
 import { apiJson, withApiRoute } from "@/lib/api/route";
 import { apiError, notFound } from "@/lib/api/errors";
-import { branchNameSchema, createBranchRequestSchema, blobQuerySchema, commitMetadataSchema, createProjectRequestSchema, idempotencyKeySchema, MAX_FILE_BYTES, MAX_FILES_PER_COMMIT, fullHashSchema, hashRefSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
+import { branchNameSchema, createBranchRequestSchema, blobQuerySchema, commitMetadataSchema, suggestionMetadataSchema, createProjectRequestSchema, idempotencyKeySchema, MAX_FILE_BYTES, MAX_FILES_PER_COMMIT, fullHashSchema, hashRefSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
 import * as service from "./service";
 import { createCommit, type UploadedFile } from "./commit";
 
@@ -100,6 +100,42 @@ export const handleBlob = (request: NextRequest, { params }: Ctx<{ id: string; s
 const MAX_COMMIT_BYTES = 4 * MAX_FILE_BYTES;
 
 /**
+ * Reads a multipart commit-style body: a JSON `metadata` part validated by `schema`, plus one part
+ * per `files` entry, named by its `field`. Shared by the commit and suggestion routes.
+ */
+async function readFilesForm<S extends typeof commitMetadataSchema | typeof suggestionMetadataSchema>(request: NextRequest, schema: S) {
+  if (!request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data")) {
+    throw apiError("UNSUPPORTED_MEDIA_TYPE", "Send the request as multipart/form-data.");
+  }
+  if (Number(request.headers.get("content-length")) > MAX_COMMIT_BYTES) {
+    throw apiError("REQUEST_TOO_LARGE", "The request is too large to upload at once.");
+  }
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    throw apiError("INVALID_REQUEST", "Send a valid multipart/form-data body.");
+  }
+  const raw = form.get("metadata");
+  let json: unknown;
+  try {
+    json = JSON.parse(typeof raw === "string" ? raw : raw ? await raw.text() : "");
+  } catch {
+    throw apiError("INVALID_REQUEST", "The metadata part must be JSON.");
+  }
+  const count = (json as { files?: unknown[] } | null)?.files?.length ?? 0;
+  if (count > MAX_FILES_PER_COMMIT) throw apiError("TOO_MANY_FILES", `A commit can hold at most ${MAX_FILES_PER_COMMIT} files.`);
+  const metadata = validate(schema, json) as import("zod").output<S>;
+
+  const parts = new Map<string, UploadedFile>();
+  for (const entry of metadata.files) {
+    const part = form.get(entry.field);
+    if (part instanceof Blob) parts.set(entry.field, { bytes: new Uint8Array(await part.arrayBuffer()), contentType: part.type });
+  }
+  return { metadata, parts };
+}
+
+/**
  * POST /api/projects/:id/commits: multipart/form-data with a JSON `metadata` part and one part per
  * file, named by its entry's `field`. The optional Idempotency-Key header makes retries safe.
  */
@@ -110,33 +146,6 @@ export const handleCreateCommit = (request: NextRequest, { params }: Ctx<{ id: s
     if (key !== null && !idempotencyKeySchema.safeParse(key).success) {
       throw apiError("INVALID_REQUEST", "Idempotency-Key must be 8 to 128 letters, digits, '_' or '-'.");
     }
-    if (!request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data")) {
-      throw apiError("UNSUPPORTED_MEDIA_TYPE", "Send the commit as multipart/form-data.");
-    }
-    if (Number(request.headers.get("content-length")) > MAX_COMMIT_BYTES) {
-      throw apiError("REQUEST_TOO_LARGE", "The commit is too large to upload in one request.");
-    }
-    let form: FormData;
-    try {
-      form = await request.formData();
-    } catch {
-      throw apiError("INVALID_REQUEST", "Send a valid multipart/form-data body.");
-    }
-    const raw = form.get("metadata");
-    let json: unknown;
-    try {
-      json = JSON.parse(typeof raw === "string" ? raw : raw ? await raw.text() : "");
-    } catch {
-      throw apiError("INVALID_REQUEST", "The metadata part must be JSON.");
-    }
-    const count = (json as { files?: unknown[] } | null)?.files?.length ?? 0;
-    if (count > MAX_FILES_PER_COMMIT) throw apiError("TOO_MANY_FILES", `A commit can hold at most ${MAX_FILES_PER_COMMIT} files.`);
-    const metadata = validate(commitMetadataSchema, json);
-
-    const parts = new Map<string, UploadedFile>();
-    for (const entry of metadata.files) {
-      const part = form.get(entry.field);
-      if (part instanceof Blob) parts.set(entry.field, { bytes: new Uint8Array(await part.arrayBuffer()), contentType: part.type });
-    }
+    const { metadata, parts } = await readFilesForm(request, commitMetadataSchema);
     return apiJson(await createCommit(caller.id, id, metadata, parts, key), 201);
   });
