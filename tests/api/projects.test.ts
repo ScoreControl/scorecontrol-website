@@ -11,7 +11,7 @@ import { PrismaClient } from "@/generated/prisma/client";
 vi.mock("@/lib/db", () => ({ getDb: () => { throw new Error("tests pass a db explicitly"); } }));
 import * as projects from "@/lib/projects/service";
 import { AuthHttpError } from "@/lib/auth/errors";
-import { createProjectResponseSchema, getProjectResponseSchema, listProjectsResponseSchema, syncQuerySchema, syncResponseSchema } from "@/lib/api/contract";
+import { createProjectResponseSchema, getProjectResponseSchema, listProjectsResponseSchema, syncQuerySchema, syncResponseSchema, historyQuerySchema, historyResponseSchema } from "@/lib/api/contract";
 
 const pg = new PGlite();
 const server = new PGLiteSocketServer({ db: pg, port: 0, host: "127.0.0.1" });
@@ -208,5 +208,46 @@ describe("GET /api/projects/:id/sync", () => {
     expect((await sync(owner, project.id, { includeArchived: "1" })).branches.map((b) => b.name)).toEqual(["gone", "main"]);
     expect(await failure(sync(owner, project.id, { branch: "nope" }))).toBe("404 NOT_FOUND");
     expect(await failure(sync(outsider, project.id, {}))).toBe("404 NOT_FOUND");
+  });
+});
+
+describe("GET /api/projects/:id/branches/:name/commits", () => {
+  async function commit(projectId: string, message: string, parents: string[] = [], authorId: string | null = null) {
+    const hash = createHash("sha256").update(randomUUID()).digest("hex");
+    const [{ id }] = (await pg.query<{ id: string }>("insert into commits (project_id, message, hash, author_id) values ($1, $2, $3, $4) returning id", [projectId, message, hash, authorId])).rows;
+    for (const [position, parent] of parents.entries()) {
+      await pg.query("insert into commit_parents (commit_id, parent_id, position) values ($1, $2, $3)", [id, parent, position]);
+    }
+    return { id, hash };
+  }
+  const history = (userId: string, projectId: string, branch: string, query: { limit?: string; cursor?: string } = {}) =>
+    projects.history(userId, projectId, branch, historyQuerySchema.parse(query), db);
+
+  it("pages newest first along first parents, listing both parents of a merge", async () => {
+    const { project } = await create(owner, "Historic");
+    const id = project.id;
+    const c1 = await commit(id, "one", [], owner);
+    const c2 = await commit(id, "two", [c1.id], owner);
+    const side = await commit(id, "side work", [c1.id]);
+    const merge = await commit(id, "merge side", [c2.id, side.id], owner);
+    await pg.query("update branches set head_commit_id = $1 where project_id = $2 and name = 'main'", [merge.id, id]);
+
+    const first = await history(owner, id, "main", { limit: "2" });
+    expect(historyResponseSchema.parse(first)).toEqual(first);
+    expect(first.commits.map((c) => c.message)).toEqual(["merge side", "two"]);
+    expect(first.commits[0]).toMatchObject({ shortHash: merge.hash.slice(0, 7), parents: [c2.hash, side.hash], author: { id: owner, username: "olivia" } });
+    expect(first.nextCursor).toEqual(expect.any(String));
+
+    const second = await history(owner, id, "main", { limit: "2", cursor: first.nextCursor! });
+    expect(second).toMatchObject({ commits: [{ message: "one", parents: [], author: { username: "olivia" } }], nextCursor: null });
+    expect((await history(owner, id, "main")).commits.map((c) => c.message)).toEqual(["merge side", "two", "one"]);
+  });
+
+  it("returns nothing for an empty branch and rejects bad cursors, missing branches, and outsiders", async () => {
+    const { project } = await create(owner, "Blank");
+    expect(await history(owner, project.id, "main")).toEqual({ commits: [], nextCursor: null });
+    expect(await failure(history(owner, project.id, "main", { cursor: "bm9wZQ" }))).toBe("400 INVALID_REQUEST");
+    expect(await failure(history(owner, project.id, "nope"))).toBe("404 NOT_FOUND");
+    expect(await failure(history(outsider, project.id, "main"))).toBe("404 NOT_FOUND");
   });
 });

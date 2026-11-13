@@ -6,7 +6,7 @@ import { requireProjectRole } from "@/lib/api/roles";
 import { AuthHttpError } from "@/lib/auth/errors";
 import {
   DEFAULT_BRANCH, type Branch, type CreateProjectResponse, type GetProjectResponse, type ListBranchesResponse,
-  type ListProjectsResponse, type Project, type ProjectRole, type SyncRelation, type SyncResponse,
+  type ListProjectsResponse, type Project, type CommitSummary, type HistoryResponse, SHORT_HASH_LENGTH, type historyQuerySchema, type ProjectRole, type SyncRelation, type SyncResponse,
   type createBranchRequestSchema, type createProjectRequestSchema, type syncQuerySchema,
 } from "@/lib/api/contract";
 import type { z } from "zod";
@@ -203,4 +203,63 @@ export async function sync(userId: string, projectId: string, query: z.output<ty
       EXISTS (SELECT 1 FROM from_head WHERE id = ${local.id}::uuid) AS is_ancestor,
       (SELECT count(*)::int FROM from_head WHERE id NOT IN (SELECT id FROM from_local)) AS ahead`;
   return is_ancestor ? answer("behind", ahead) : answer("unrelated");
+}
+
+// ─── History (section 8) ────────────────────────────────────────────────────
+
+const summarySelect = {
+  id: true, hash: true, message: true, createdAt: true,
+  author: { select: { id: true, username: true } },
+  parents: { select: { parent: { select: { hash: true } } }, orderBy: { position: "asc" } },
+} as const;
+type SummaryRow = {
+  hash: string; message: string; createdAt: Date; author: { id: string; username: string } | null;
+  parents: { parent: { hash: string } }[];
+};
+
+export function toCommitSummary(row: SummaryRow): CommitSummary {
+  return {
+    hash: row.hash, shortHash: row.hash.slice(0, SHORT_HASH_LENGTH), message: row.message,
+    parents: row.parents.map((p) => p.parent.hash), createdAt: row.createdAt.toISOString(), author: row.author,
+  };
+}
+
+// The cursor is the hash of the next commit to show, base64url-encoded so clients treat it as opaque.
+const encodeCursor = (hash: string) => Buffer.from(hash).toString("base64url");
+function decodeCursor(cursor: string): string {
+  const hash = Buffer.from(cursor, "base64url").toString();
+  if (!/^[0-9a-f]{64}$/.test(hash)) throw apiError("INVALID_REQUEST", "That cursor isn't valid. Start again without it.");
+  return hash;
+}
+
+/**
+ * Viewer and up. Newest first, following first parents from the branch head (the branch's own line,
+ * not the commits merged into it). Fetches one extra commit to know whether another page exists.
+ */
+export async function history(userId: string, projectId: string, branchName: string, query: z.output<typeof historyQuerySchema>, db: Db = getDb()): Promise<HistoryResponse> {
+  await requireProjectRole(userId, projectId, "viewer", db);
+  const branch = await db.branch.findUnique({ where: { projectId_name: { projectId, name: branchName } }, select: { headCommitId: true } });
+  if (!branch) throw notFound("Branch");
+
+  let startId = branch.headCommitId;
+  if (query.cursor) {
+    const start = await db.commit.findUnique({ where: { projectId_hash: { projectId, hash: decodeCursor(query.cursor) } }, select: { id: true } });
+    if (!start) throw apiError("INVALID_REQUEST", "That cursor isn't valid. Start again without it.");
+    startId = start.id;
+  }
+  if (!startId) return { commits: [], nextCursor: null };
+
+  const line = await db.$queryRaw<{ id: string; depth: number }[]>`
+    WITH RECURSIVE line(id, depth) AS (
+      SELECT ${startId}::uuid, 0
+      UNION ALL
+      SELECT cp.parent_id, l.depth + 1 FROM commit_parents cp JOIN line l ON cp.commit_id = l.id
+      WHERE cp.position = 0 AND l.depth < ${query.limit}
+    )
+    SELECT id, depth FROM line ORDER BY depth`;
+  const page = line.slice(0, query.limit).map((r) => r.id);
+  const rows = await db.commit.findMany({ where: { id: { in: page } }, select: summarySelect });
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const next = line[query.limit] ? await db.commit.findUnique({ where: { id: line[query.limit].id }, select: { hash: true } }) : null;
+  return { commits: page.map((id) => toCommitSummary(byId.get(id)!)), nextCursor: next ? encodeCursor(next.hash) : null };
 }
