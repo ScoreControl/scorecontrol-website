@@ -11,7 +11,7 @@ import { PrismaClient } from "@/generated/prisma/client";
 vi.mock("@/lib/db", () => ({ getDb: () => { throw new Error("tests pass a db explicitly"); } }));
 import * as projects from "@/lib/projects/service";
 import { AuthHttpError } from "@/lib/auth/errors";
-import { createProjectResponseSchema, getProjectResponseSchema, listProjectsResponseSchema } from "@/lib/api/contract";
+import { createProjectResponseSchema, getProjectResponseSchema, listProjectsResponseSchema, syncQuerySchema, syncResponseSchema } from "@/lib/api/contract";
 
 const pg = new PGlite();
 const server = new PGLiteSocketServer({ db: pg, port: 0, host: "127.0.0.1" });
@@ -141,5 +141,72 @@ describe("branches", () => {
 
     expect(await failure(projects.setBranchArchived(owner, id, "main", true, db))).toBe("422 VALIDATION_FAILED");
     expect(await failure(projects.setBranchArchived(admin, id, "missing", true, db))).toBe("404 NOT_FOUND");
+  });
+});
+
+describe("GET /api/projects/:id/sync", () => {
+  /** Inserts a commit with the given parents (in order) and returns its id and hash. */
+  async function commit(projectId: string, message: string, parents: string[] = []) {
+    const hash = createHash("sha256").update(randomUUID()).digest("hex");
+    const [{ id }] = (await pg.query<{ id: string }>("insert into commits (project_id, message, hash) values ($1, $2, $3) returning id", [projectId, message, hash])).rows;
+    for (const [position, parent] of parents.entries()) {
+      await pg.query("insert into commit_parents (commit_id, parent_id, position) values ($1, $2, $3)", [id, parent, position]);
+    }
+    return { id, hash };
+  }
+  const point = (projectId: string, branch: string, commitId: string) =>
+    pg.query("update branches set head_commit_id = $1 where project_id = $2 and name = $3", [commitId, projectId, branch]);
+  const sync = (userId: string, projectId: string, query: { branch?: string; commit?: string; includeArchived?: "0" | "1" }) =>
+    projects.sync(userId, projectId, syncQuerySchema.parse(query), db);
+
+  it("answers none, empty, same, behind, and unrelated", async () => {
+    const { project } = await create(owner, "Synced");
+    await member(project.id, viewer, "VIEWER");
+    const id = project.id;
+
+    expect(await sync(viewer, id, {})).toMatchObject({ relation: "none", commitsAhead: 0, role: "viewer" });
+    expect((await sync(viewer, id, { commit: "abcdef0" })).relation).toBe("empty");
+
+    // c1 <- c2 <- c3 (main); c2 <- side (branch "side")
+    const c1 = await commit(id, "one");
+    const c2 = await commit(id, "two", [c1.id]);
+    const c3 = await commit(id, "three", [c2.id]);
+    const side = await commit(id, "side", [c2.id]);
+    await point(id, "main", c3.id);
+    await pg.query("insert into branches (project_id, name, head_commit_id) values ($1, 'side', $2)", [id, side.id]);
+
+    const same = await sync(viewer, id, { commit: c3.hash.slice(0, 7) });
+    expect(syncResponseSchema.parse(same)).toEqual(same);
+    expect(same).toMatchObject({ relation: "same", commitsAhead: 0, branch: { name: "main", headHash: c3.hash, headMessage: "three" } });
+    expect(same.branches.map((b) => b.name)).toEqual(["main", "side"]);
+    expect(await sync(viewer, id, { commit: c1.hash })).toMatchObject({ relation: "behind", commitsAhead: 2 });
+    expect(await sync(viewer, id, { commit: side.hash })).toMatchObject({ relation: "unrelated", commitsAhead: 0 });
+    expect(await sync(viewer, id, { branch: "side", commit: c2.hash })).toMatchObject({ relation: "behind", commitsAhead: 1 });
+    expect((await sync(viewer, id, { commit: "f".repeat(64) })).relation).toBe("unrelated");
+  });
+
+  it("follows both parents of a merge commit", async () => {
+    const { project } = await create(owner, "Merged");
+    const id = project.id;
+    const base = await commit(id, "base");
+    const a = await commit(id, "a", [base.id]);
+    const b = await commit(id, "b", [base.id]);
+    const merge = await commit(id, "merge", [a.id, b.id]);
+    await point(id, "main", merge.id);
+    // From b, the head has merge and a that b doesn't.
+    expect(await sync(owner, id, { commit: b.hash })).toMatchObject({ relation: "behind", commitsAhead: 2 });
+  });
+
+  it("404s for a missing branch or an outsider and hides archived branches unless asked", async () => {
+    const { project } = await create(owner, "Guarded");
+    const c = await commit(project.id, "c");
+    await point(project.id, "main", c.id);
+    await projects.createBranch(owner, project.id, { name: "gone", fromHash: c.hash }, db);
+    await projects.setBranchArchived(owner, project.id, "gone", true, db);
+
+    expect((await sync(owner, project.id, {})).branches.map((b) => b.name)).toEqual(["main"]);
+    expect((await sync(owner, project.id, { includeArchived: "1" })).branches.map((b) => b.name)).toEqual(["gone", "main"]);
+    expect(await failure(sync(owner, project.id, { branch: "nope" }))).toBe("404 NOT_FOUND");
+    expect(await failure(sync(outsider, project.id, {}))).toBe("404 NOT_FOUND");
   });
 });

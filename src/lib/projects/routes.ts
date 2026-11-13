@@ -4,7 +4,7 @@ import { readJson } from "@/lib/auth/http";
 import { validate } from "@/lib/auth/validation";
 import { apiJson, withApiRoute } from "@/lib/api/route";
 import { notFound } from "@/lib/api/errors";
-import { branchNameSchema, createBranchRequestSchema, createProjectRequestSchema, updateBranchRequestSchema } from "@/lib/api/contract";
+import { branchNameSchema, createBranchRequestSchema, createProjectRequestSchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
 import * as service from "./service";
 
 // Route handlers for section 5 of docs/api-contract.md. Role checks live in the service.
@@ -51,4 +51,10 @@ export const handleUpdateBranch = (request: NextRequest, { params }: Ctx<{ id: s
     const { id, name } = await params;
     const input = validate(updateBranchRequestSchema, await body(request));
     return apiJson(await service.setBranchArchived(caller.id, id, branchName(name), input.archived));
+  });
+
+export const handleSync = (request: NextRequest, { params }: Ctx<{ id: string }>) =>
+  withApiRoute(request, async (caller) => {
+    const query = validate(syncQuerySchema, Object.fromEntries(request.nextUrl.searchParams));
+    return apiJson(await service.sync(caller.id, (await params).id, query));
   });

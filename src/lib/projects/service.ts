@@ -3,9 +3,11 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { getDb } from "@/lib/db";
 import { apiError, notFound } from "@/lib/api/errors";
 import { requireProjectRole } from "@/lib/api/roles";
+import { AuthHttpError } from "@/lib/auth/errors";
 import {
   DEFAULT_BRANCH, type Branch, type CreateProjectResponse, type GetProjectResponse, type ListBranchesResponse,
-  type ListProjectsResponse, type Project, type ProjectRole, type createBranchRequestSchema, type createProjectRequestSchema,
+  type ListProjectsResponse, type Project, type ProjectRole, type SyncRelation, type SyncResponse,
+  type createBranchRequestSchema, type createProjectRequestSchema, type syncQuerySchema,
 } from "@/lib/api/contract";
 import type { z } from "zod";
 
@@ -155,4 +157,50 @@ export async function setBranchArchived(userId: string, projectId: string, name:
     select: branchSelect,
   });
   return { branch: toBranch(branch) };
+}
+
+// ─── Sync (section 6) ───────────────────────────────────────────────────────
+
+/**
+ * Viewer and up. Compares the score's recorded commit with the branch head by walking the commit
+ * graph in Postgres: `behind` when the local commit is an ancestor of the head, with `commitsAhead`
+ * = commits reachable from the head but not from the local commit.
+ */
+export async function sync(userId: string, projectId: string, query: z.output<typeof syncQuerySchema>, db: Db = getDb()): Promise<SyncResponse> {
+  const { role } = await requireProjectRole(userId, projectId, "viewer", db);
+  const row = await db.branch.findUnique({
+    where: { projectId_name: { projectId, name: query.branch } }, select: { ...branchSelect, headCommitId: true },
+  });
+  if (!row) throw notFound("Branch");
+  const branches = (await branchRows(db, projectId, query.includeArchived)).map(toBranch);
+  const answer = (relation: SyncRelation, commitsAhead = 0): SyncResponse => ({ branch: toBranch(row), relation, commitsAhead, branches, role });
+
+  if (!query.commit) return answer("none");
+  if (!row.headCommitId) return answer("empty");
+  let local: { id: string };
+  try {
+    local = await resolveCommit(db, projectId, query.commit);
+  } catch (error) {
+    // A commit the project doesn't have still gets a usable answer.
+    if (error instanceof AuthHttpError && error.code === "NOT_FOUND") return answer("unrelated");
+    throw error;
+  }
+  if (local.id === row.headCommitId) return answer("same");
+
+  const [{ is_ancestor, ahead }] = await db.$queryRaw<{ is_ancestor: boolean; ahead: number }[]>`
+    WITH RECURSIVE
+      from_head(id) AS (
+        SELECT ${row.headCommitId}::uuid
+        UNION
+        SELECT cp.parent_id FROM commit_parents cp JOIN from_head h ON cp.commit_id = h.id
+      ),
+      from_local(id) AS (
+        SELECT ${local.id}::uuid
+        UNION
+        SELECT cp.parent_id FROM commit_parents cp JOIN from_local l ON cp.commit_id = l.id
+      )
+    SELECT
+      EXISTS (SELECT 1 FROM from_head WHERE id = ${local.id}::uuid) AS is_ancestor,
+      (SELECT count(*)::int FROM from_head WHERE id NOT IN (SELECT id FROM from_local)) AS ahead`;
+  return is_ancestor ? answer("behind", ahead) : answer("unrelated");
 }
