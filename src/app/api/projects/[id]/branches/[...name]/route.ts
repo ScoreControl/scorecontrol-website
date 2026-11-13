@@ -1,1 +1,1 @@
-export { handleUpdateBranch as PATCH } from "@/lib/projects/routes";
+export { handleBranchGet as GET, handleUpdateBranch as PATCH } from "@/lib/projects/routes";
