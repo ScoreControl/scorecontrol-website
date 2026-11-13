@@ -1,6 +1,7 @@
 import "server-only";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { getDb } from "@/lib/db";
+import { downloadBlob } from "@/lib/storage";
 import { apiError, notFound } from "@/lib/api/errors";
 import { requireProjectRole } from "@/lib/api/roles";
 import { AuthHttpError } from "@/lib/auth/errors";
@@ -283,4 +284,15 @@ export async function commitDetail(userId: string, projectId: string, hashRef: s
       path: f.path, format: f.blob.format, role: f.role.toLowerCase() as CommitFile["role"], sha256: f.blob.sha256, size: f.blob.sizeBytes,
     })),
   } };
+}
+
+/** Viewer and up. The blob must belong to this project; bytes come from the private bucket. */
+export async function getBlob(userId: string, projectId: string, sha256: string, db: Db = getDb(),
+  download: (path: string) => Promise<Uint8Array> = downloadBlob) {
+  await requireProjectRole(userId, projectId, "viewer", db);
+  const blob = await db.blob.findUnique({
+    where: { projectId_sha256: { projectId, sha256 } }, select: { sha256: true, sizeBytes: true, contentType: true, storagePath: true },
+  });
+  if (!blob) throw notFound("File");
+  return { sha256: blob.sha256, size: blob.sizeBytes, contentType: blob.contentType, bytes: await download(blob.storagePath) };
 }

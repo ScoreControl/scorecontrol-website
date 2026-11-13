@@ -278,3 +278,22 @@ describe("GET /api/projects/:id/commits/:hash", () => {
     expect(await failure(projects.commitDetail(outsider, project.id, hash, db))).toBe("404 NOT_FOUND");
   });
 });
+
+describe("GET /api/projects/:id/blobs/:sha256", () => {
+  it("returns a project's file from storage and 404s for other projects' files and outsiders", async () => {
+    const { project } = await create(owner, "Files");
+    const other = await create(admin, "Elsewhere");
+    const bytes = new TextEncoder().encode("<score-partwise/>");
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    await pg.query("insert into blobs (project_id, sha256, size_bytes, content_type, storage_path) values ($1, $2, $3, 'application/xml', $4)",
+      [project.id, sha, bytes.byteLength, `${project.id}/${sha}`]);
+    const download = vi.fn(async () => bytes);
+
+    await expect(projects.getBlob(owner, project.id, sha, db, download))
+      .resolves.toEqual({ sha256: sha, size: bytes.byteLength, contentType: "application/xml", bytes });
+    expect(download).toHaveBeenCalledWith(`${project.id}/${sha}`);
+    expect(await failure(projects.getBlob(admin, other.project.id, sha, db, download))).toBe("404 NOT_FOUND");
+    expect(await failure(projects.getBlob(outsider, project.id, sha, db, download))).toBe("404 NOT_FOUND");
+    expect(download).toHaveBeenCalledTimes(1);
+  });
+});

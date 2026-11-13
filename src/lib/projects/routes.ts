@@ -1,10 +1,10 @@
 import "server-only";
-import type { NextRequest } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { readJson } from "@/lib/auth/http";
 import { validate } from "@/lib/auth/validation";
 import { apiJson, withApiRoute } from "@/lib/api/route";
 import { notFound } from "@/lib/api/errors";
-import { branchNameSchema, createBranchRequestSchema, createProjectRequestSchema, hashRefSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
+import { branchNameSchema, createBranchRequestSchema, blobQuerySchema, createProjectRequestSchema, fullHashSchema, hashRefSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
 import * as service from "./service";
 
 // Route handlers for section 5 of docs/api-contract.md. Role checks live in the service.
@@ -77,4 +77,20 @@ export const handleCommitDetail = (request: NextRequest, { params }: Ctx<{ id: s
     const ref = hashRefSchema.safeParse(hash);
     if (!ref.success) throw notFound("Commit");
     return apiJson(await service.commitDetail(caller.id, id, ref.data));
+  });
+
+/** Raw bytes by default; `?encoding=base64` returns JSON for plugin runtimes that handle binary poorly. */
+export const handleBlob = (request: NextRequest, { params }: Ctx<{ id: string; sha256: string }>) =>
+  withApiRoute(request, async (caller) => {
+    const { id, sha256 } = await params;
+    const sha = fullHashSchema.safeParse(sha256.toLowerCase());
+    if (!sha.success) throw notFound("File");
+    const { encoding } = validate(blobQuerySchema, Object.fromEntries(request.nextUrl.searchParams));
+    const blob = await service.getBlob(caller.id, id, sha.data);
+    if (encoding === "base64") {
+      return apiJson({ sha256: blob.sha256, size: blob.size, contentType: blob.contentType, base64: Buffer.from(blob.bytes).toString("base64") });
+    }
+    return new NextResponse(Buffer.from(blob.bytes), {
+      headers: { "Content-Type": blob.contentType, "Content-Length": String(blob.bytes.byteLength), "X-Content-Type-Options": "nosniff" },
+    });
   });
