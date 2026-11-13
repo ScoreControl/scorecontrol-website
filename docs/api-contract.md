@@ -4,7 +4,7 @@ The API the MuseScore plugin and the web app use to work with projects, branches
 
 The machine-readable version is [`src/lib/api/contract.ts`](../src/lib/api/contract.ts): zod schemas and TypeScript types for every request, response, and error code. **Change both together.** If they disagree, the code is a bug in one of them; ask before picking a side.
 
-Status: **draft for review** by the plugin developer and Ryan. Implemented so far: plugin login and `/api/auth/refresh` (section 4), bearer-token auth with role checks, and the project and branch routes (section 5), sync (section 6), and pull, history, and blobs (section 8). commits (section 7, without background parsing). and message suggestions (section 9, rule-based, `model: "scorecontrol/rules-v1"`; no LLM yet).
+Status: **draft for review** by the plugin developer and Ryan. Implemented so far: plugin login and `/api/auth/refresh` (section 4), bearer-token auth with role checks, and the project and branch routes (section 5), sync (section 6), and pull, history, and blobs (section 8). commits (section 7, without background parsing). and message suggestions (section 9, rule-based, plus project settings and members in section 9a; `model: "scorecontrol/rules-v1"`; no LLM yet).
 
 ## Contents
 
@@ -99,6 +99,12 @@ This is unrelated to the database table `score_metadata`, which holds musical fa
 | GET | `/api/projects/:id/blobs/:sha256` | Download a file (pull) | viewer |
 | POST | `/api/projects/:id/commits` | Upload files and create a commit, atomically | editor |
 | POST | `/api/projects/:id/commit-message-suggestions` | LLM-suggested message | editor |
+| PATCH | `/api/projects/:id` | Rename or re-describe (slug stays) | admin |
+| DELETE | `/api/projects/:id` | Delete the project, its history, and its files | owner |
+| GET | `/api/projects/:id/members` | Owner and members | viewer |
+| POST | `/api/projects/:id/members` | Add a member by username | admin (owner for admins) |
+| PATCH | `/api/projects/:id/members/:userId` | Change a member's role | admin (owner for admins) |
+| DELETE | `/api/projects/:id/members/:userId` | Remove a member, or leave | admin, or the member |
 
 Pull requests and merges are out of scope until the diff engine is connected.
 
@@ -295,6 +301,18 @@ After writing the file into the score, the plugin updates its embedded metadata 
 - To keep `summary`, send it as `aiSummary` in the commit metadata.
 - Per-user rate limit and a daily cost cap. The provider sits behind one `suggestCommitMessage(diff)` function so it can be swapped.
 
+## 9a. Project settings and members (web app)
+
+Added 2026-11-13 for the web app; the plugin doesn't need them.
+
+- `PATCH /api/projects/:id` with `{ "name"?: "...", "description"?: "..." | null }` → `200 { "project": ... }`. The slug never changes, so plugin links keep working.
+- `DELETE /api/projects/:id` → `204`. Owner only. Removes all history; stored files are deleted afterwards on a best-effort basis.
+- `GET /api/projects/:id/members` → `{ "owner": { "id", "username" }, "members": [ { "user": { "id", "username" }, "role", "createdAt" } ] }`.
+- `POST /api/projects/:id/members` with `{ "username": "edith", "role": "editor" }` → `201 { "member": ... }`. Unknown username `404 NOT_FOUND`; the owner `422 VALIDATION_FAILED`; already a member `409 MEMBER_EXISTS`.
+- `PATCH /api/projects/:id/members/:userId` with `{ "role": "viewer" }` → `200 { "member": ... }`.
+- `DELETE /api/projects/:id/members/:userId` → `204`. Members can always remove themselves.
+- Roles: admins manage editors and viewers; only the owner adds, changes, or removes admins.
+
 ## 10. Error codes
 
 | HTTP | Code | When | Plugin does |
@@ -309,6 +327,7 @@ After writing the file into the score, the plugin updates its embedded metadata 
 | 409 | `STALE_PARENT` | Branch moved since `parentHash` | Warn and run the new-branch flow |
 | 409 | `BRANCH_EXISTS` | Branch name taken | Ask for another name |
 | 409 | `BRANCH_ARCHIVED` | Committing to an archived branch | Choose another branch |
+| 409 | `MEMBER_EXISTS` | Adding a user who is already a member | Change their role instead |
 | 409 | `IDEMPOTENCY_CONFLICT` | Key reused with a different request | Use a new key per commit |
 | 413 | `FILE_TOO_LARGE` | A file is over 25 MB | Show the limit |
 | 413 | `TOO_MANY_FILES` | Over 100 files in the snapshot | Show the limit |
