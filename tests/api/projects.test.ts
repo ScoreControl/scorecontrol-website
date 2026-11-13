@@ -11,7 +11,8 @@ import { PrismaClient } from "@/generated/prisma/client";
 vi.mock("@/lib/db", () => ({ getDb: () => { throw new Error("tests pass a db explicitly"); } }));
 import * as projects from "@/lib/projects/service";
 import { AuthHttpError } from "@/lib/auth/errors";
-import { createProjectResponseSchema, getProjectResponseSchema, listProjectsResponseSchema, syncQuerySchema, syncResponseSchema, historyQuerySchema, historyResponseSchema, commitDetailResponseSchema, commitMetadataSchema, commitResponseSchema } from "@/lib/api/contract";
+import { createProjectResponseSchema, getProjectResponseSchema, listProjectsResponseSchema, syncQuerySchema, syncResponseSchema, historyQuerySchema, historyResponseSchema, commitDetailResponseSchema, commitMetadataSchema, commitResponseSchema, suggestionMetadataSchema, suggestionResponseSchema } from "@/lib/api/contract";
+import { suggestCommitMessage } from "@/lib/projects/suggest";
 import { commitHash, createCommit } from "@/lib/projects/commit";
 
 const pg = new PGlite();
@@ -402,5 +403,33 @@ describe("POST /api/projects/:id/commits", () => {
     await projects.createBranch(editor, id, { name: "old", fromHash: c1.commit.hash }, db);
     await projects.setBranchArchived(owner, id, "old", true, db);
     expect(await failure(commit(editor, id, meta({ branch: "old", parentHash: c1.commit.hash }), { f0: file("<v2/>") }))).toBe("409 BRANCH_ARCHIVED");
+  });
+});
+
+describe("POST /api/projects/:id/commit-message-suggestions", () => {
+  const xml = (bars: string[]) => new TextEncoder().encode(
+    `<score-partwise><work><work-title>Sonata</work-title></work><part-list><score-part id="P1"><part-name>Violin</part-name></score-part></part-list>` +
+    `<part id="P1">${bars.map((b, i) => `<measure number="${i + 1}">${b}</measure>`).join("")}</part></score-partwise>`);
+  const files = [{ field: "f0", path: "sonata.musicxml" }];
+
+  it("suggests from the title for a first commit and from the bar diff against the parent", async () => {
+    const { project } = await create(owner, "Suggested");
+    await member(project.id, editor, "EDITOR");
+    await member(project.id, viewer, "VIEWER");
+    const v1 = xml(["a", "b", "c"]);
+    const first = await suggestCommitMessage(editor, project.id, suggestionMetadataSchema.parse({ branch: "main", parentHash: null, files }), new Map([["f0", { bytes: v1, contentType: "" }]]), db);
+    expect(suggestionResponseSchema.parse(first)).toEqual(first);
+    expect(first).toMatchObject({ suggestion: "Add Sonata (Violin)", basis: "initial_commit", model: "scorecontrol/rules-v1" });
+
+    const c1 = await createCommit(editor, project.id, commitMetadataSchema.parse({ branch: "main", parentHash: null, message: first.suggestion, files }),
+      new Map([["f0", { bytes: v1, contentType: "" }]]), null, db, vi.fn(async () => {}));
+    const download = vi.fn(async () => v1);
+    const next = await suggestCommitMessage(editor, project.id, suggestionMetadataSchema.parse({ branch: "main", parentHash: c1.commit.hash, files }),
+      new Map([["f0", { bytes: xml(["a", "B", "c", "d"]), contentType: "" }]]), db, download);
+    expect(next).toMatchObject({ suggestion: "Edit bars 2, 4 in Violin; add 1 measure", basis: "simple_diff" });
+    expect(download).toHaveBeenCalledOnce();
+
+    expect(await failure(suggestCommitMessage(viewer, project.id, suggestionMetadataSchema.parse({ branch: "main", parentHash: null, files }),
+      new Map([["f0", { bytes: v1, contentType: "" }]]), db))).toBe("403 FORBIDDEN");
   });
 });

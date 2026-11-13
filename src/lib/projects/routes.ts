@@ -7,6 +7,7 @@ import { apiError, notFound } from "@/lib/api/errors";
 import { branchNameSchema, createBranchRequestSchema, blobQuerySchema, commitMetadataSchema, suggestionMetadataSchema, createProjectRequestSchema, idempotencyKeySchema, MAX_FILE_BYTES, MAX_FILES_PER_COMMIT, fullHashSchema, hashRefSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
 import * as service from "./service";
 import { createCommit, type UploadedFile } from "./commit";
+import { suggestCommitMessage } from "./suggest";
 
 // Route handlers for section 5 of docs/api-contract.md. Role checks live in the service.
 
@@ -148,4 +149,12 @@ export const handleCreateCommit = (request: NextRequest, { params }: Ctx<{ id: s
     }
     const { metadata, parts } = await readFilesForm(request, commitMetadataSchema);
     return apiJson(await createCommit(caller.id, id, metadata, parts, key), 201);
+  });
+
+/** POST /api/projects/:id/commit-message-suggestions: the same multipart body as a commit, minus the message. */
+export const handleSuggestCommitMessage = (request: NextRequest, { params }: Ctx<{ id: string }>) =>
+  withApiRoute(request, async (caller) => {
+    const { id } = await params;
+    const { metadata, parts } = await readFilesForm(request, suggestionMetadataSchema);
+    return apiJson(await suggestCommitMessage(caller.id, id, metadata, parts));
   });
