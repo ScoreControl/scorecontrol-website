@@ -17,7 +17,7 @@ import type { z } from "zod";
 type Db = PrismaClient;
 const isUniqueViolation = (error: unknown) => (error as { code?: string } | null)?.code === "P2002";
 
-const branchSelect = {
+export const branchSelect = {
   name: true, archivedAt: true,
   headCommit: { select: { hash: true, message: true } },
 } as const;
@@ -123,7 +123,7 @@ export async function listBranches(userId: string, projectId: string, includeArc
 }
 
 /** Full hash or a unique prefix of 7+ characters -> commit id. */
-export async function resolveCommit(db: Db, projectId: string, hashRef: string) {
+export async function resolveCommit(db: Pick<Db, "commit">, projectId: string, hashRef: string) {
   const matches = await db.commit.findMany({ where: { projectId, hash: { startsWith: hashRef } }, select: { id: true, hash: true }, take: 2 });
   if (matches.length === 0) throw notFound("Commit");
   if (matches.length > 1) throw apiError("AMBIGUOUS_HASH", "That hash prefix matches more than one commit. Use more characters.");
@@ -187,28 +187,36 @@ export async function sync(userId: string, projectId: string, query: z.output<ty
     throw error;
   }
   if (local.id === row.headCommitId) return answer("same");
+  const ahead = await commitsAhead(db, row.headCommitId, local.id);
+  return ahead === null ? answer("unrelated") : answer("behind", ahead);
+}
 
+/**
+ * How many commits the head is past `localId`: commits reachable from the head (through every
+ * parent, so merges count) but not from `localId`. Null when `localId` isn't in the head's history.
+ */
+export async function commitsAhead(db: Pick<Db, "$queryRaw">, headId: string, localId: string): Promise<number | null> {
   const [{ is_ancestor, ahead }] = await db.$queryRaw<{ is_ancestor: boolean; ahead: number }[]>`
     WITH RECURSIVE
       from_head(id) AS (
-        SELECT ${row.headCommitId}::uuid
+        SELECT ${headId}::uuid
         UNION
         SELECT cp.parent_id FROM commit_parents cp JOIN from_head h ON cp.commit_id = h.id
       ),
       from_local(id) AS (
-        SELECT ${local.id}::uuid
+        SELECT ${localId}::uuid
         UNION
         SELECT cp.parent_id FROM commit_parents cp JOIN from_local l ON cp.commit_id = l.id
       )
     SELECT
-      EXISTS (SELECT 1 FROM from_head WHERE id = ${local.id}::uuid) AS is_ancestor,
+      EXISTS (SELECT 1 FROM from_head WHERE id = ${localId}::uuid) AS is_ancestor,
       (SELECT count(*)::int FROM from_head WHERE id NOT IN (SELECT id FROM from_local)) AS ahead`;
-  return is_ancestor ? answer("behind", ahead) : answer("unrelated");
+  return is_ancestor ? ahead : null;
 }
 
 // ─── History (section 8) ────────────────────────────────────────────────────
 
-const summarySelect = {
+export const summarySelect = {
   id: true, hash: true, message: true, createdAt: true,
   author: { select: { id: true, username: true } },
   parents: { select: { parent: { select: { hash: true } } }, orderBy: { position: "asc" } },
