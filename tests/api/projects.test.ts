@@ -11,7 +11,7 @@ import { PrismaClient } from "@/generated/prisma/client";
 vi.mock("@/lib/db", () => ({ getDb: () => { throw new Error("tests pass a db explicitly"); } }));
 import * as projects from "@/lib/projects/service";
 import { AuthHttpError } from "@/lib/auth/errors";
-import { createProjectResponseSchema, getProjectResponseSchema, listProjectsResponseSchema, syncQuerySchema, syncResponseSchema, historyQuerySchema, historyResponseSchema } from "@/lib/api/contract";
+import { createProjectResponseSchema, getProjectResponseSchema, listProjectsResponseSchema, syncQuerySchema, syncResponseSchema, historyQuerySchema, historyResponseSchema, commitDetailResponseSchema } from "@/lib/api/contract";
 
 const pg = new PGlite();
 const server = new PGLiteSocketServer({ db: pg, port: 0, host: "127.0.0.1" });
@@ -249,5 +249,32 @@ describe("GET /api/projects/:id/branches/:name/commits", () => {
     expect(await failure(history(owner, project.id, "main", { cursor: "bm9wZQ" }))).toBe("400 INVALID_REQUEST");
     expect(await failure(history(owner, project.id, "nope"))).toBe("404 NOT_FOUND");
     expect(await failure(history(outsider, project.id, "main"))).toBe("404 NOT_FOUND");
+  });
+});
+
+describe("GET /api/projects/:id/commits/:hash", () => {
+  it("returns the commit with its files, by full hash or prefix", async () => {
+    const { project } = await create(owner, "Detailed");
+    await member(project.id, viewer, "VIEWER");
+    const sha = createHash("sha256").update("score").digest("hex");
+    const [{ id: blobId }] = (await pg.query<{ id: string }>(
+      "insert into blobs (project_id, sha256, size_bytes, content_type, storage_path) values ($1, $2, 1234, 'application/vnd.recordare.musicxml+xml', $3) returning id",
+      [project.id, sha, `${project.id}/${sha}`])).rows;
+    const hash = await commitOnMain(project.id, "Add score");
+    const [{ id: commitId }] = (await pg.query<{ id: string }>("select id from commits where hash = $1", [hash])).rows;
+    await pg.query("insert into commit_files (commit_id, path, blob_id) values ($1, 'score.musicxml', $2), ($1, 'parts/a.musicxml', $2)", [commitId, blobId]);
+    await pg.query("update commits set ai_summary = 'Adds the score.' where id = $1", [commitId]);
+
+    const result = await projects.commitDetail(viewer, project.id, hash.slice(0, 9), db);
+    expect(commitDetailResponseSchema.parse(result)).toEqual(result);
+    expect(result.commit).toMatchObject({
+      hash, message: "Add score", aiSummary: "Adds the score.", parents: [],
+      files: [
+        { path: "parts/a.musicxml", format: "MUSICXML", role: "primary", sha256: sha, size: 1234 },
+        { path: "score.musicxml", format: "MUSICXML", role: "primary", sha256: sha, size: 1234 },
+      ],
+    });
+    expect(await failure(projects.commitDetail(viewer, project.id, "0000000", db))).toBe("404 NOT_FOUND");
+    expect(await failure(projects.commitDetail(outsider, project.id, hash, db))).toBe("404 NOT_FOUND");
   });
 });

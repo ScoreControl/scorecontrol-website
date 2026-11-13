@@ -6,7 +6,7 @@ import { requireProjectRole } from "@/lib/api/roles";
 import { AuthHttpError } from "@/lib/auth/errors";
 import {
   DEFAULT_BRANCH, type Branch, type CreateProjectResponse, type GetProjectResponse, type ListBranchesResponse,
-  type ListProjectsResponse, type Project, type CommitSummary, type HistoryResponse, SHORT_HASH_LENGTH, type historyQuerySchema, type ProjectRole, type SyncRelation, type SyncResponse,
+  type ListProjectsResponse, type Project, type CommitSummary, type CommitFile, type CommitDetailResponse, type HistoryResponse, SHORT_HASH_LENGTH, type historyQuerySchema, type ProjectRole, type SyncRelation, type SyncResponse,
   type createBranchRequestSchema, type createProjectRequestSchema, type syncQuerySchema,
 } from "@/lib/api/contract";
 import type { z } from "zod";
@@ -262,4 +262,25 @@ export async function history(userId: string, projectId: string, branchName: str
   const byId = new Map(rows.map((r) => [r.id, r]));
   const next = line[query.limit] ? await db.commit.findUnique({ where: { id: line[query.limit].id }, select: { hash: true } }) : null;
   return { commits: page.map((id) => toCommitSummary(byId.get(id)!)), nextCursor: next ? encodeCursor(next.hash) : null };
+}
+
+// ─── Commit detail and blobs (section 8) ────────────────────────────────────
+
+/** Viewer and up. A commit by full hash or unique 7+ character prefix, with its full file list. */
+export async function commitDetail(userId: string, projectId: string, hashRef: string, db: Db = getDb()): Promise<CommitDetailResponse> {
+  await requireProjectRole(userId, projectId, "viewer", db);
+  const { id } = await resolveCommit(db, projectId, hashRef);
+  const row = await db.commit.findUniqueOrThrow({
+    where: { id },
+    select: {
+      ...summarySelect, aiSummary: true,
+      files: { select: { path: true, role: true, blob: { select: { format: true, sha256: true, sizeBytes: true } } }, orderBy: { path: "asc" } },
+    },
+  });
+  return { commit: {
+    ...toCommitSummary(row), aiSummary: row.aiSummary,
+    files: row.files.map((f) => ({
+      path: f.path, format: f.blob.format, role: f.role.toLowerCase() as CommitFile["role"], sha256: f.blob.sha256, size: f.blob.sizeBytes,
+    })),
+  } };
 }

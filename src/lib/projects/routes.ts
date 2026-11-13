@@ -4,7 +4,7 @@ import { readJson } from "@/lib/auth/http";
 import { validate } from "@/lib/auth/validation";
 import { apiJson, withApiRoute } from "@/lib/api/route";
 import { notFound } from "@/lib/api/errors";
-import { branchNameSchema, createBranchRequestSchema, createProjectRequestSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
+import { branchNameSchema, createBranchRequestSchema, createProjectRequestSchema, hashRefSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
 import * as service from "./service";
 
 // Route handlers for section 5 of docs/api-contract.md. Role checks live in the service.
@@ -69,4 +69,12 @@ export const handleBranchGet = (request: NextRequest, { params }: Ctx<{ id: stri
     if (name.length < 2 || name.at(-1) !== "commits") throw notFound();
     const query = validate(historyQuerySchema, Object.fromEntries(request.nextUrl.searchParams));
     return apiJson(await service.history(caller.id, id, branchName(name.slice(0, -1)), query));
+  });
+
+export const handleCommitDetail = (request: NextRequest, { params }: Ctx<{ id: string; hash: string }>) =>
+  withApiRoute(request, async (caller) => {
+    const { id, hash } = await params;
+    const ref = hashRefSchema.safeParse(hash);
+    if (!ref.success) throw notFound("Commit");
+    return apiJson(await service.commitDetail(caller.id, id, ref.data));
   });
