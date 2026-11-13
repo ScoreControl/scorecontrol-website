@@ -22,7 +22,7 @@ Keep this file current: update the change log and the branch TODOs with every ch
 | Styling | Tailwind CSS 4 | |
 | Auth | Supabase Auth via `@supabase/ssr` | HttpOnly cookie sessions handled by the server. See `docs/AUTH_API.md`. |
 | Database | Supabase Postgres, Prisma 7.10 (`prisma-client` generator, `@prisma/adapter-pg`) | Do not install `prisma@latest` (it's a v8 pre-release). |
-| File storage | Supabase Storage (planned) | Score file bytes, keyed `{projectId}/{sha256}`. |
+| File storage | Supabase Storage, private `blobs` bucket (25 MB) | Score file bytes, keyed `{projectId}/{sha256}`. |
 | Rate limiting | Upstash Redis (`@upstash/ratelimit`) | Required in production, in-memory locally. |
 | Validation | Zod 4 | |
 | Tests | Vitest 4 (unit, migrations on PGlite), Playwright 1.64 (smoke, integration) | |
@@ -36,12 +36,15 @@ Keep this file current: update the change log and the branch TODOs with every ch
 | `prisma/migrations/` | App table migrations: `init_schema` (tables, 25 MB check, active-branch index, RLS) and `users_sync_triggers` (users rows from the username registry). Apply after `supabase/migrations/`. |
 | `supabase/migrations/` | Hand-written SQL for the `auth` schema, triggers, and RLS. |
 | `src/lib/auth/` | Auth core: config, cookies, guards, rate limiting, routes, usernames. |
+| `src/lib/api/` | Project API core: `withApiRoute` (bearer or cookie auth, error envelope), `requireProjectRole`, `apiError` helpers, and `contract.ts`. |
+| `src/lib/api/contract.ts` | Plugin/web API contract: zod schemas, types, error codes. Shared with the mock server; no server-only imports. Written version: `docs/api-contract.md`. |
+| `src/lib/db.ts` | Shared Prisma client (`getDb()`). Bypasses RLS: scope every query by the verified user and role. |
 | `src/lib/supabase/` | Supabase server and proxy clients. |
 | `src/app/api/auth/*`, `src/app/auth/confirm` | Auth route handlers (thin re-exports of `src/lib/auth/routes.ts`). |
 | `src/proxy.ts` | Refreshes sessions on page requests. It does not authorize anything. |
 | `src/generated/prisma/` | Generated Prisma client (gitignored). |
-| `docs/` | `AUTH_API.md`, `ENVIRONMENT.md`, `DATABASE_SCHEMA.md` |
-| `tests/` | `auth/` and `db/` (Vitest), `smoke/` and `integration/` (Playwright) |
+| `docs/` | `api-contract.md`, `AUTH_API.md`, `ENVIRONMENT.md`, `DATABASE_SCHEMA.md`; meeting handouts (PDFs) in `docs/handouts/` |
+| `tests/` | `api/`, `auth/`, and `db/` (Vitest), `smoke/` and `integration/` (Playwright) |
 
 ## Commands
 
@@ -60,6 +63,23 @@ Print the SQL for the current schema without a database: `npx prisma migrate dif
 - Never run `supabase config push`. `prisma migrate reset` deletes the auth RPCs in `public`, so re-apply the Supabase migration afterwards.
 - Never commit `.env.local`. The free-tier Supabase project pauses after about a week idle.
 - WSL: Playwright needs `sudo npx playwright install-deps` once, or Chromium fails with `libnspr4.so` missing.
+
+## Watch-outs (codebase scan, 2026-11-05)
+
+Known risks and traps. Update or remove an item when it's resolved.
+
+- **Hosted database is behind the code.** `users_sync_triggers`, `plugin_api`, and the `blobs` bucket migration exist only in git. Apply them (`npx supabase db push`, then `npx prisma migrate deploy`) before any route touches real tables.
+- **Stacked branches.** `feat/api-contract` ← `feat/data-layer` ← `feat/api-core` ← `feat/plugin-auth`. Merge them in that order with merge commits. If one is squash-merged, rebase the rest onto `main` (`git rebase --onto main <old-parent> <branch>`) or they'll show duplicate commits.
+- **Ryan's `ui/ui+auth`** merges cleanly with the stack (checked 11/05). Its only backend change is a blank line in `src/lib/auth/config.ts`.
+- **Prisma bypasses RLS.** Every project query must start from `requireProjectRole(caller.id, ...)`. A route that queries by `projectId` without it leaks private projects.
+- **Archived projects are invisible to `requireProjectRole`**, owners included. An unarchive route will need its own lookup.
+- **Two login modes share `POST /api/auth/login`.** The origin check is skipped only when the body says `client: "plugin"`, and that mode must never set cookies. Don't add cookie writes to `pluginLogin`.
+- **Bearer tokens are verified by calling Supabase** (`getUser(token)`, ~50-100 ms per request). Moving to asymmetric JWT keys plus `getClaims` makes it local, but then a logged-out token stays valid until it expires (about an hour).
+- **Idempotency keys are scoped by user, not project.** The commit route must include the project id in `request_hash` so one key can't replay across projects.
+- **`projects.slug` is required and unique per owner.** The create route must generate it and retry on a collision (`sonata-in-d-2`).
+- **Commit hashes:** the server computes them from canonical JSON (`docs/api-contract.md` §2). Never accept a hash from the client, and keep `created_at` in the hash identical to the stored value (millisecond precision).
+- **Request body limits:** `readJson` caps JSON at 8 KB (auth only). Multipart commits need their own streaming limit, and serverless hosts may cap bodies well below 25 MB (contract §11, "Large uploads").
+- **Flaky test:** `tests/auth/supabase-sdk.test.ts:196` can fail across a second boundary. Re-run before assuming a real failure.
 
 ## Git workflow
 
@@ -87,7 +107,7 @@ Newest first.
     - First migrations: `init_schema` (tables, CHECK, index, RLS on every table) and `users_sync_triggers` (`on_username_created` creates users rows; deleting an auth account deletes its row).
     - No FK from `users` to `auth.users`, because Prisma fails on cross-schema FKs (P4002). The triggers were first a Supabase migration, but `supabase start` applies those before Prisma creates `users`, so they moved into a guarded Prisma migration.
     - Added `tests/db/schema.test.ts` (10 tests). Verified on Postgres 17: migrations apply, no Prisma drift, and the migration fails clearly if the username registry is missing. 208/208 tests pass.
-- **2026-10-22, `feat/db-schema` (Guy):** Added `ScoreControl_Backend_Status_2026-10-22.pdf` at the repo root, a 3-page meeting handout. It covers status, the 5 technical schema decisions, key and secret handling, RLS status, local Supabase onboarding, the frontend login checklist, and remaining login and schema work.
+- **2026-10-22, `feat/db-schema` (Guy):** Added `ScoreControl_Backend_Status_2026-10-22.pdf` (now in `docs/handouts/`), a 3-page meeting handout. It covers status, the 5 technical schema decisions, key and secret handling, RLS status, local Supabase onboarding, the frontend login checklist, and remaining login and schema work.
 - **2026-10-21, `main` (Guy):** Merged PR #2 (`feat/db-schema` → `main`) before the 10/22 meeting, merged without review approval at Guy's call. The schema is in `main` but has no migration, so the database is unchanged. Meeting decisions get applied as follow-up PRs.
 - **2026-10-21, `main` (Oliver van der Kouwe):** Merged PR #1 (`user-auth` → `main`) as merge commit `b9e34b0`, with no changes beyond the 5 reviewed auth commits. The flaky test is still unfixed. PR #2 (`feat/db-schema`) retargeted from `user-auth` to `main`; it applies with no conflicts and needs no rebase.
 - **2026-10-21, `feat/db-schema` (Guy):** Reviewed `user-auth`: lint, typecheck, and build pass; 197/198 unit tests pass. The one failure is a timing flake in `tests/auth/supabase-sdk.test.ts:196`, which calls `session()` twice and so compares two tokens built across a second boundary. Drafted the app schema in `prisma/schema.prisma`: profiles, projects, project_members, blobs, score_metadata, commits, commit_parents, commit_files, branches, tags, pull_requests. Scenario checks on embedded Postgres caught two bugs, both fixed: ids and `updated_at` had no database default, and NO ACTION FKs made project deletion depend on cascade order. Wrote `docs/DATABASE_SCHEMA.md` and this log. No migration yet.

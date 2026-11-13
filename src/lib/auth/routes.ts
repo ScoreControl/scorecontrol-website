@@ -1,4 +1,6 @@
 import "server-only";
+import type { Session } from "@supabase/supabase-js";
+import { refreshRequestSchema } from "@/lib/api/contract";
 import { NextResponse, type NextRequest } from "next/server";
 import { createAuthContext, createEphemeralClient, type AuthContext } from "@/lib/supabase/server";
 import { getAppOrigin, getAuthConfig } from "./config";
@@ -7,7 +9,7 @@ import {
   AuthHttpError, invalidCredentials, isDuplicateAccount, isInvalidSession, providerError, unauthenticated, unavailable,
   usernameTaken,
 } from "./errors";
-import { authJson, errorResponse, logAuthFailure, noStore, readJson } from "./http";
+import { assertMutationOrigin, authJson, errorResponse, logAuthFailure, noStore, readJson } from "./http";
 import { claimUsername, findUsernameAccount, resolveLoginIdentity } from "./usernames";
 import { CONFIRM_PATH, HOME_PATH, RESET_PASSWORD_PATH, loginPath, type LoginError } from "./paths";
 import { hasRecentEmailProof, reauthenticationRequired, updatePassword, verifyCurrentPassword } from "./password";
@@ -60,13 +62,53 @@ export function handleSignup(request: NextRequest) {
   });
 }
 
+type LoginInput = ReturnType<typeof parseLogin>;
+const parseLogin = (body: unknown) => validate(loginSchema, body);
+
+/** Rate limits, then resolves a username or email to the account to sign in. */
+async function loginIdentity(request: NextRequest, input: LoginInput) {
+  await enforceRateLimit(request, "login");
+  const identity = await resolveLoginIdentity(input.identifier ?? input.email!);
+  if (!identity) throw invalidCredentials();
+  await enforceSubjectLimit("login", identity.email);
+  return identity;
+}
+
+/** Token pair for the plugin. `expiresAt` is Unix seconds. */
+function pluginTokens(session: Session) {
+  return {
+    accessToken: session.access_token,
+    refreshToken: session.refresh_token,
+    expiresAt: session.expires_at ?? Math.floor(Date.now() / 1000) + session.expires_in,
+  };
+}
+
+/**
+ * Plugin login: the session lives only in memory and comes back in the body; no cookie is read or set.
+ * The plugin has no browser origin, so the origin check is skipped; the password and rate limits still apply.
+ */
+async function pluginLogin(request: NextRequest, input: LoginInput) {
+  const identity = await loginIdentity(request, input);
+  const deadline = createAuthDeadline(request.signal);
+  const client = createEphemeralClient(deadline.signal);
+  const { data, error } = await deadline.execute(() => client.auth.signInWithPassword({ email: identity.email, password: input.password }));
+  if (error) throw providerError(error);
+  if (!data.session || !data.user) throw invalidCredentials();
+  if (identity.id && data.user.id !== identity.id) {
+    await deadline.execute(() => client.auth.signOut({ scope: "local" })).catch(() => undefined);
+    throw invalidCredentials();
+  }
+  return authJson({ ...pluginTokens(data.session), user: await authUser(data.user) });
+}
+
 export function handleLogin(request: NextRequest) {
   return run(request, async (getContext) => {
-    const input = validate(loginSchema, await readJson(request));
-    await enforceRateLimit(request, "login");
-    const identity = await resolveLoginIdentity(input.identifier ?? input.email!);
-    if (!identity) throw invalidCredentials();
-    await enforceSubjectLimit("login", identity.email);
+    const body = await readJson(request, { checkOrigin: false });
+    // Web logins keep the origin check ahead of validation, exactly as before plugin mode existed.
+    if ((body as { client?: unknown } | null)?.client !== "plugin") assertMutationOrigin(request);
+    const input = parseLogin(body);
+    if (input.client === "plugin") return pluginLogin(request, input);
+    const identity = await loginIdentity(request, input);
     const { client, bridge, execute } = getContext();
     bridge.setMode(input.rememberMe);
     const { data, error } = await execute(() => client.auth.signInWithPassword({ email: identity.email, password: input.password }));
@@ -80,6 +122,23 @@ export function handleLogin(request: NextRequest) {
     bridge.savePreference();
     bridge.commitSession();
     return authJson({ user: await authUser(data.user) });
+  });
+}
+
+/**
+ * Plugin token refresh. Refresh tokens rotate: the old one stops working, so the plugin must store
+ * the new pair. An invalid, used, or revoked refresh token returns 401 UNAUTHENTICATED (log in again).
+ */
+export function handleRefresh(request: NextRequest) {
+  return run(request, async () => {
+    const input = validate(refreshRequestSchema, await readJson(request, { checkOrigin: false }));
+    await enforceRateLimit(request, "refresh");
+    const deadline = createAuthDeadline(request.signal);
+    const client = createEphemeralClient(deadline.signal);
+    const { data, error } = await deadline.execute(() => client.auth.refreshSession({ refresh_token: input.refreshToken }));
+    if (error) throw isInvalidSession(error) ? unauthenticated() : providerError(error);
+    if (!data.session || !data.user) throw unauthenticated();
+    return authJson({ ...pluginTokens(data.session), user: await authUser(data.user) });
   });
 }
 

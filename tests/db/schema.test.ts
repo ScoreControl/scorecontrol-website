@@ -43,7 +43,7 @@ async function blob(projectId: string, size = 1000) {
 }
 
 async function commit(projectId: string, authorId: string | null, message: string, files: Record<string, string>, parents: string[] = []) {
-  const [row] = await q<{ id: string }>("insert into commits (project_id, author_id, message) values ($1, $2, $3) returning id", [projectId, authorId, message]);
+  const [row] = await q<{ id: string }>("insert into commits (project_id, author_id, message, hash) values ($1, $2, $3, $4) returning id", [projectId, authorId, message, sha()]);
   for (const [path, blobId] of Object.entries(files)) {
     await q("insert into commit_files (commit_id, path, blob_id) values ($1, $2, $3)", [row.id, path, blobId]);
   }
@@ -70,10 +70,14 @@ beforeAll(async () => {
     create table auth.users (id uuid primary key, email text unique, raw_user_meta_data jsonb, raw_app_meta_data jsonb);
     grant usage on schema auth to supabase_auth_admin;
     grant select, insert, update, delete on auth.users to supabase_auth_admin;
+    create schema storage;
+    create table storage.buckets (id text primary key, name text not null, public boolean default false, file_size_limit bigint);
   `);
   await db.transaction((tx) => tx.exec(read("supabase/migrations/20261019000000_auth_usernames.sql")));
   await db.exec(read("prisma/migrations/20261027000000_init_schema/migration.sql"));
+  await db.transaction((tx) => tx.exec(read("supabase/migrations/20261105000000_blobs_bucket.sql")));
   await db.exec(read("prisma/migrations/20261027000100_users_sync_triggers/migration.sql"));
+  await db.exec(read("prisma/migrations/20261105000000_plugin_api/migration.sql"));
 }, 60_000);
 afterAll(async () => { await db.close(); });
 
@@ -94,7 +98,7 @@ describe("init_schema migration", () => {
     const owner = await signup(`ai-${randomUUID().slice(0, 8)}`);
     const { id } = await project(owner);
     await expect(q("insert into commits (project_id, author_id) values ($1, $2)", [id, owner])).rejects.toThrow(/message/);
-    await q("insert into commits (project_id, author_id, message, ai_summary) values ($1, $2, 'Fix bowing', 'Changed bowing in m. 12')", [id, owner]);
+    await q("insert into commits (project_id, author_id, message, ai_summary, hash) values ($1, $2, 'Fix bowing', 'Changed bowing in m. 12', $3)", [id, owner, sha()]);
     await q("insert into pull_requests (project_id, number, title, ai_conflict_notes) values ($1, 1, 'Viola part', $2)",
       [id, JSON.stringify({ measure_12_alto: "Option A keeps parallel motion" })]);
     const [note] = await q<{ note: string }>("select ai_conflict_notes->>'measure_12_alto' as note from pull_requests where project_id = $1", [id]);
@@ -207,5 +211,59 @@ describe("users and deletion", () => {
     for (const table of ["branches", "commits", "blobs"]) {
       expect(await q(`select 1 from ${table} where project_id = $1`, [id])).toEqual([]);
     }
+  });
+});
+
+describe("plugin_api migration", () => {
+  it("requires a lowercase hex hash, unique per project but reusable across projects", async () => {
+    const owner = await signup("hasher");
+    const a = await project(owner);
+    const b = await project(owner);
+    const hash = "a".repeat(64);
+    await q("insert into commits (project_id, message, hash) values ($1, 'one', $2)", [a.id, hash]);
+    await expect(q("insert into commits (project_id, message, hash) values ($1, 'dup', $2)", [a.id, hash])).rejects.toThrow(/commits_project_id_hash_key/);
+    await q("insert into commits (project_id, message, hash) values ($1, 'other project', $2)", [b.id, hash]);
+    await expect(q("insert into commits (project_id, message, hash) values ($1, 'upper', $2)", [a.id, "A".repeat(64)])).rejects.toThrow(/commits_hash_check/);
+    await expect(q("insert into commits (project_id, message) values ($1, 'none')", [a.id])).rejects.toThrow(/null value/);
+  });
+
+  it("enforces the contract's branch name rule", async () => {
+    const { id } = await project(await signup("brancher"));
+    for (const name of ["ryan-alt", "feature/verse-2", "v1.0", "x".repeat(64)]) {
+      await q("insert into branches (project_id, name) values ($1, $2)", [id, name]);
+    }
+    for (const name of ["", "x".repeat(65), "has space", "/lead", ".hidden", "trail/", "a..b", "a//b", "x.lock", "ünï"]) {
+      await expect(q("insert into branches (project_id, name) values ($1, $2)", [id, name])).rejects.toThrow(/branches_name_check/);
+    }
+  });
+
+  it("defaults file roles to PRIMARY and accepts the other roles", async () => {
+    const owner = await signup("roler");
+    const { id } = await project(owner);
+    const c = await commit(id, owner, "Roles", { "score.musicxml": await blob(id) });
+    await q("insert into commit_files (commit_id, path, blob_id, role) values ($1, 'score.mscz', $2, 'NATIVE')", [c, await blob(id)]);
+    const rows = await q<{ path: string; role: string }>("select path, role from commit_files where commit_id = $1 order by path", [c]);
+    expect(rows).toEqual([{ path: "score.mscz", role: "NATIVE" }, { path: "score.musicxml", role: "PRIMARY" }]);
+  });
+
+  it("stores one idempotency key per user and deletes them with the user", async () => {
+    const owner = await signup("idem");
+    const row = [owner, "key-12345678", "b".repeat(64), 201, JSON.stringify({ data: { ok: true } })];
+    const insert = "insert into idempotency_keys (user_id, key, request_hash, response_status, response_body) values ($1, $2, $3, $4, $5)";
+    await q(insert, row);
+    await expect(q(insert, row)).rejects.toThrow(/idempotency_keys_pkey/);
+    await q(insert, [await signup("idem2"), ...row.slice(1)]);
+    await q("delete from users where id = $1", [owner]);
+    expect(await q("select 1 from idempotency_keys where user_id = $1", [owner])).toHaveLength(0);
+  });
+
+  it("enables RLS on idempotency_keys", async () => {
+    const [row] = await q<{ relrowsecurity: boolean }>("select relrowsecurity from pg_class where relname = 'idempotency_keys'");
+    expect(row.relrowsecurity).toBe(true);
+  });
+
+  it("creates the private 25 MB blobs bucket, idempotently", async () => {
+    await db.transaction((tx) => tx.exec(read("supabase/migrations/20261105000000_blobs_bucket.sql")));
+    expect(await q("select id, public, file_size_limit from storage.buckets")).toEqual([{ id: "blobs", public: false, file_size_limit: MB25 }]);
   });
 });

@@ -6,7 +6,7 @@ import { Redis } from "@upstash/redis";
 import { getAppOrigin } from "./config";
 import { AuthHttpError, rateLimited, unavailable } from "./errors";
 
-type Action = "login" | "signup" | "resend" | "recover" | "confirm";
+type Action = "login" | "signup" | "resend" | "recover" | "confirm" | "refresh";
 type Policy = { limit: number; window: "5 m" | "1 h"; ms: number };
 const policies: Record<Action, Policy> = {
   login: { limit: 30, window: "5 m", ms: 5 * 60_000 },
@@ -14,6 +14,7 @@ const policies: Record<Action, Policy> = {
   resend: { limit: 10, window: "1 h", ms: 60 * 60_000 },
   recover: { limit: 10, window: "1 h", ms: 60 * 60_000 },
   confirm: { limit: 30, window: "5 m", ms: 5 * 60_000 },
+  refresh: { limit: 60, window: "5 m", ms: 5 * 60_000 },
 };
 // Per-account quotas bound distributed guessing/email flooding against one address.
 const subjectPolicies: Partial<Record<Action, Policy>> = {

@@ -10,6 +10,8 @@ A user is `{ id, email, emailVerified, username }`. Every new account has a user
 |---|---|---|
 | `POST /api/auth/signup` | `{ "email", "password", "username" }` | 201 `{ data: { status: "authenticated", user } }` if Supabase returned a session, else 202 `{ data: { status: "confirmation_required" } }` |
 | `POST /api/auth/login` | `{ "identifier", "password", "rememberMe"? }` | 200 `{ data: { user } }` and session cookies. `identifier` is a username or email |
+| `POST /api/auth/login` (plugin) | `{ "identifier", "password", "client": "plugin" }` | 200 `{ data: { accessToken, refreshToken, expiresAt, user } }`; no cookies, no origin check. See [`api-contract.md`](api-contract.md) §4 |
+| `POST /api/auth/refresh` | `{ "refreshToken" }` | Same 200 body with a new pair. Refresh tokens rotate (the old one stops working); 401 `UNAUTHENTICATED` when used or revoked. Rate-limited (`refresh`: 60 per 5 minutes per IP) |
 | `GET /api/auth/me` | none | 200 `{ data: { user } }`, or 401 when signed out |
 | `POST /api/auth/logout` | `{}` | 204; signs out this browser/session only |
 | `POST /api/auth/resend-confirmation` | `{ "email" }` | 202 `{ data: { status: "accepted" } }` for known and unknown addresses |

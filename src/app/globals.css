@@ -12,6 +12,13 @@
   --font-mono: var(--font-geist-mono);
 }
 
+@theme {
+  --color-primary: #5A97BF;
+  --color-secondary: #3E537E;
+  --color-navbar-background: #5C75A9;
+  --color-navbar-text: #C1DFF3;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;

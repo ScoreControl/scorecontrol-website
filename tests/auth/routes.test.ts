@@ -6,7 +6,7 @@ import { createCookieBridge, AUTH_COOKIE } from "@/lib/auth/cookies";
 const mocks = vi.hoisted(() => ({ createContext: vi.fn(), createEphemeral: vi.fn(), rateLimit: vi.fn(), subjectLimit: vi.fn() }));
 vi.mock("@/lib/supabase/server", () => ({ createAuthContext: mocks.createContext, createEphemeralClient: mocks.createEphemeral, createReadOnlyClient: vi.fn() }));
 vi.mock("@/lib/auth/rate-limit", () => ({ enforceRateLimit: mocks.rateLimit, enforceSubjectLimit: mocks.subjectLimit }));
-import { handleChangePassword, handleConfirm, handleClaimUsername, handleForgotPassword, handleResetPassword, handleLogin, handleLogout, handleMe, handleResend, handleSignup } from "@/lib/auth/routes";
+import { handleChangePassword, handleConfirm, handleClaimUsername, handleForgotPassword, handleResetPassword, handleLogin, handleLogout, handleMe, handleRefresh, handleResend, handleSignup } from "@/lib/auth/routes";
 import * as usernameStore from "@/lib/auth/usernames";
 import { AuthHttpError } from "@/lib/auth/errors";
 import { requireUser } from "@/lib/auth/user";
@@ -422,5 +422,65 @@ describe("password recovery and change", () => {
     const response = await handleChangePassword(request("/api/auth/password", { password: "new-long-password", currentPassword: "x" }));
     expect(response.status).toBe(401);
     expect(auth.updateUser).not.toHaveBeenCalled();
+  });
+});
+
+describe("plugin login and refresh", () => {
+  const session = { access_token: "access.jwt.token", refresh_token: "refresh-1", expires_at: 1_762_200_000, expires_in: 3600 };
+  const pluginRequest = (path: string, body: unknown, headers: Record<string, string> = {}) => new NextRequest(`http://localhost:3000${path}`, {
+    method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json", ...headers },
+  });
+  const refreshSession = vi.fn();
+  beforeEach(() => {
+    refreshSession.mockReset();
+    mocks.createEphemeral.mockReturnValue({ auth: { ...ephemeral, refreshSession } });
+  });
+
+  it("returns tokens in the body without an origin and never sets cookies", async () => {
+    ephemeral.signInWithPassword.mockResolvedValue({ data: { session, user }, error: null });
+    const response = await handleLogin(pluginRequest("/api/auth/login", { identifier: "person@example.com", password: "secret", client: "plugin" }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ data: { accessToken: "access.jwt.token", refreshToken: "refresh-1", expiresAt: 1_762_200_000,
+      user: { id: "user-uuid", email: "person@example.com", emailVerified: true, username: "octo-cat" } } });
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(mocks.createContext).not.toHaveBeenCalled();
+    expect(mocks.rateLimit).toHaveBeenCalledWith(expect.anything(), "login");
+    expect(mocks.subjectLimit).toHaveBeenCalledWith("login", "person@example.com");
+  });
+  it("rejects wrong passwords in plugin mode", async () => {
+    ephemeral.signInWithPassword.mockResolvedValue({ data: { session: null, user: null }, error: { status: 400, code: "invalid_credentials" } });
+    const response = await handleLogin(pluginRequest("/api/auth/login", { identifier: "person@example.com", password: "wrong", client: "plugin" }));
+    expect(response.status).toBe(401);
+    expect((await response.json()).error.code).toBe("INVALID_CREDENTIALS");
+  });
+  it("still requires the app origin for web logins", async () => {
+    const response = await handleLogin(pluginRequest("/api/auth/login", { identifier: "person@example.com", password: "secret" }, { origin: "https://evil.example" }));
+    expect(response.status).toBe(403);
+    expect(ephemeral.signInWithPassword).not.toHaveBeenCalled();
+    expect(auth.signInWithPassword).not.toHaveBeenCalled();
+  });
+  it("refreshes a token pair", async () => {
+    refreshSession.mockResolvedValue({ data: { session: { ...session, refresh_token: "refresh-2" }, user }, error: null });
+    const response = await handleRefresh(pluginRequest("/api/auth/refresh", { refreshToken: "refresh-1" }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toMatchObject({ accessToken: "access.jwt.token", refreshToken: "refresh-2" });
+    expect(refreshSession).toHaveBeenCalledWith({ refresh_token: "refresh-1" });
+    expect(mocks.rateLimit).toHaveBeenCalledWith(expect.anything(), "refresh");
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+  it("answers 401 for used or revoked refresh tokens", async () => {
+    refreshSession.mockResolvedValue({ data: { session: null, user: null }, error: { status: 400, code: "refresh_token_already_used" } });
+    const response = await handleRefresh(pluginRequest("/api/auth/refresh", { refreshToken: "refresh-1" }));
+    expect(response.status).toBe(401);
+    expect((await response.json()).error.code).toBe("UNAUTHENTICATED");
+  });
+  it("answers 503 when the provider is down", async () => {
+    refreshSession.mockResolvedValue({ data: { session: null, user: null }, error: { status: 500 } });
+    expect((await handleRefresh(pluginRequest("/api/auth/refresh", { refreshToken: "refresh-1" }))).status).toBe(503);
+  });
+  it("validates the refresh body", async () => {
+    expect((await handleRefresh(pluginRequest("/api/auth/refresh", {}))).status).toBe(400);
+    expect((await handleRefresh(pluginRequest("/api/auth/refresh", { refreshToken: "x", extra: 1 }))).status).toBe(400);
   });
 });

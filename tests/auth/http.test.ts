@@ -31,6 +31,14 @@ describe("auth HTTP boundary", () => {
     expect(response.headers.get("retry-after")).toBe("30");
     expect(response.headers.get("cache-control")).toContain("no-store");
   });
+  it("includes machine-readable details alongside fields", async () => {
+    const details = { branch: "main", headHash: null };
+    const body = await errorResponse(new AuthHttpError(409, "STALE_PARENT", "Branch main has moved.", undefined, undefined, details)).json();
+    expect(body).toEqual({ error: { code: "STALE_PARENT", message: "Branch main has moved.", details } });
+    const plain = await errorResponse(new AuthHttpError(400, "INVALID_REQUEST", "Check", { email: ["Bad"] })).json();
+    expect(plain.error).not.toHaveProperty("details");
+    expect(plain.error.fields).toEqual({ email: ["Bad"] });
+  });
   it("redacts unexpected errors and logs only safe correlation information", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const response = errorResponse(new Error("password=supersecret&token=do-not-leak"));

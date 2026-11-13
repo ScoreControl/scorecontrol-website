@@ -7,6 +7,8 @@ export class AuthHttpError extends Error {
     message: string,
     public readonly fields?: Record<string, string[]>,
     public readonly retryAfter?: number,
+    /** Machine-readable context for clients, e.g. the current branch head on STALE_PARENT. */
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "AuthHttpError";
