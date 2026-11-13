@@ -92,6 +92,7 @@ Known risks and traps. Update or remove an item when it's resolved.
 
 Newest first.
 
+- **2026-11-13, `feat/sync` (Guy):** Built `GET /api/projects/:id/sync` (contract section 6). Relation comes from two recursive CTEs over `commit_parents` (all parents, so merges count); `commitsAhead` = commits reachable from the head but not from the local commit; unknown hashes answer `unrelated`. Skipped the mock server (plugin developer not blocked). 3 new tests; 300/300 pass.
 - **2026-11-12, `feat/project-routes` (Guy):** Built section 5 of `docs/api-contract.md`: `GET/POST /api/projects`, `GET /api/projects/:id`, `GET/POST /api/projects/:id/branches`, `PATCH /api/projects/:id/branches/:name` (catch-all route, since branch names can contain `/`). Logic in `src/lib/projects/service.ts`; slugs get `-2`, `-3` suffixes; `format` is accepted but not stored (projects have no format column). Added `tests/api/projects.test.ts` (8 tests on PGlite through `@prisma/adapter-pg`, via the pinned dev dependency `@electric-sql/pglite-socket`). Hosted database confirmed up to date (3 Prisma migrations). 297/297 tests pass. Gotcha: on Windows, run Vitest from `C:\...`; a lowercase `c:\` working directory makes every test file fail with "failed to find the current suite".
 - **2026-11-12, `main` (Guy):** Merged PR #4 (`feat/plugin-auth`, including `feat/api-contract`, `feat/data-layer`, `feat/api-core`), PR #5 (Ryan's `ui/ui+auth`), and `feat/google-sign-in`. Resolved the AGENTS.md conflicts by keeping both change logs and combining the TODO lists.
 - **2026-11-05, `feat/plugin-auth` (Guy):** Step 4. `POST /api/auth/login` with `client: "plugin"` returns `{ accessToken, refreshToken, expiresAt, user }` through an in-memory Supabase client (no cookies; origin check skipped only for plugin bodies, still checked first for web logins). New `POST /api/auth/refresh` (rotating refresh tokens, `refresh` rate limit 60/5 min). `readJson` takes `{ checkOrigin: false }` for token routes. 283/283 tests pass.
@@ -121,7 +122,8 @@ Newest first.
 - [ ] Apply to the hosted project: `npx supabase db push --linked` (the `20261105000000_blobs_bucket` migration is already applied), then `npx prisma migrate deploy` (applies `20261105000000_plugin_api`; init migrations were applied 2026-10-29).
 - [ ] Optional: switch the hosted project to asymmetric JWT signing keys, then verify bearer tokens locally with `getClaims`.
 - [x] Project and branch routes (contract section 5).
-- [ ] Next steps (plan order): mock server → remaining read routes (sync, history, commit detail, blob download) → commit route with concurrency test → LLM suggestions → CI.
+- [x] Sync route (contract section 6).
+- [ ] Next steps (plan order): remaining read routes (history, commit detail, blob download) → commit route with concurrency test → LLM suggestions → CI.
 - [ ] Guy: create the Google OAuth client (redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`) and enable Google in Supabase → Authentication → Sign In / Providers.
 - [ ] Guy: add `http://localhost:3000/auth/confirm` to Supabase → Authentication → URL Configuration → Redirect URLs.
 - [ ] Ryan: add `<a href="/api/auth/oauth/google">Continue with Google</a>` to the login and signup pages, and a username form for accounts where `/api/auth/me` returns `username: null`.
