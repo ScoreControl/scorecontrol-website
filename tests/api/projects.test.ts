@@ -11,7 +11,8 @@ import { PrismaClient } from "@/generated/prisma/client";
 vi.mock("@/lib/db", () => ({ getDb: () => { throw new Error("tests pass a db explicitly"); } }));
 import * as projects from "@/lib/projects/service";
 import { AuthHttpError } from "@/lib/auth/errors";
-import { createProjectResponseSchema, getProjectResponseSchema, listProjectsResponseSchema, syncQuerySchema, syncResponseSchema, historyQuerySchema, historyResponseSchema, commitDetailResponseSchema, commitMetadataSchema, commitResponseSchema, suggestionMetadataSchema, suggestionResponseSchema } from "@/lib/api/contract";
+import { createProjectResponseSchema, getProjectResponseSchema, listProjectsResponseSchema, syncQuerySchema, syncResponseSchema, historyQuerySchema, historyResponseSchema, commitDetailResponseSchema, commitMetadataSchema, commitResponseSchema, suggestionMetadataSchema, suggestionResponseSchema, updateProjectRequestSchema, addMemberRequestSchema, listMembersResponseSchema } from "@/lib/api/contract";
+import * as members from "@/lib/projects/members";
 import { suggestCommitMessage } from "@/lib/projects/suggest";
 import { commitHash, createCommit } from "@/lib/projects/commit";
 
@@ -431,5 +432,78 @@ describe("POST /api/projects/:id/commit-message-suggestions", () => {
 
     expect(await failure(suggestCommitMessage(viewer, project.id, suggestionMetadataSchema.parse({ branch: "main", parentHash: null, files }),
       new Map([["f0", { bytes: v1, contentType: "" }]]), db))).toBe("403 FORBIDDEN");
+  });
+});
+
+describe("PATCH and DELETE /api/projects/:id", () => {
+  it("lets admins rename but keeps the slug, and lets only the owner delete everything", async () => {
+    const { project } = await create(owner, "Renamable");
+    await member(project.id, admin, "ADMIN");
+    await member(project.id, editor, "EDITOR");
+    await commitOnMain(project.id, "c");
+
+    await expect(projects.updateProject(admin, project.id, updateProjectRequestSchema.parse({ name: "New name", description: null }), db))
+      .resolves.toMatchObject({ project: { name: "New name", slug: "renamable", description: null, role: "admin" } });
+    expect(await failure(projects.updateProject(editor, project.id, { name: "No" }, db))).toBe("403 FORBIDDEN");
+    expect(() => updateProjectRequestSchema.parse({})).toThrow();
+
+    const removeFiles = vi.fn(async () => {});
+    expect(await failure(projects.deleteProject(admin, project.id, db, removeFiles))).toBe("403 FORBIDDEN");
+    await projects.deleteProject(owner, project.id, db, removeFiles);
+    expect(removeFiles).toHaveBeenCalledWith(project.id);
+    for (const table of ["projects", "branches", "commits", "project_members"]) {
+      const column = table === "projects" ? "id" : "project_id";
+      expect((await pg.query(`select 1 from ${table} where ${column} = $1`, [project.id])).rows).toHaveLength(0);
+    }
+    expect(await failure(projects.getProject(owner, project.id, db))).toBe("404 NOT_FOUND");
+  });
+});
+
+describe("project members", () => {
+  async function setup() {
+    const { project } = await create(owner, "Team");
+    await member(project.id, admin, "ADMIN");
+    return project.id;
+  }
+
+  it("adds by username, lists with the owner separate, re-roles, and removes", async () => {
+    const id = await setup();
+    await expect(members.addMember(admin, id, addMemberRequestSchema.parse({ username: " Edith ", role: "editor" }), db))
+      .resolves.toMatchObject({ member: { user: { id: editor, username: "edith" }, role: "editor" } });
+    await members.addMember(admin, id, { username: "victor", role: "viewer" }, db);
+
+    const listed = await members.listMembers(viewer, id, db);
+    expect(listMembersResponseSchema.parse(listed)).toEqual(listed);
+    expect(listed.owner).toEqual({ id: owner, username: "olivia" });
+    expect(listed.members.map((m) => [m.user.username, m.role])).toEqual([["adam", "admin"], ["edith", "editor"], ["victor", "viewer"]]);
+
+    await expect(members.updateMember(admin, id, viewer, { role: "editor" }, db)).resolves.toMatchObject({ member: { role: "editor" } });
+    await members.removeMember(admin, id, viewer, db);
+    expect(await failure(projects.getProject(viewer, id, db))).toBe("404 NOT_FOUND");
+  });
+
+  it("rejects unknown users, the owner, duplicates, and missing members", async () => {
+    const id = await setup();
+    expect(await failure(members.addMember(owner, id, { username: "nobody", role: "editor" }, db))).toBe("404 NOT_FOUND");
+    expect(await failure(members.addMember(owner, id, { username: "olivia", role: "editor" }, db))).toBe("422 VALIDATION_FAILED");
+    expect(await failure(members.addMember(owner, id, { username: "adam", role: "viewer" }, db))).toBe("409 MEMBER_EXISTS");
+    expect(await failure(members.updateMember(owner, id, outsider, { role: "viewer" }, db))).toBe("404 NOT_FOUND");
+  });
+
+  it("reserves admin changes for the owner and lets anyone leave", async () => {
+    const id = await setup();
+    await members.addMember(owner, id, { username: "oscar", role: "admin" }, db);
+    await members.addMember(admin, id, { username: "edith", role: "editor" }, db);
+
+    expect(await failure(members.addMember(admin, id, { username: "victor", role: "admin" }, db))).toBe("403 FORBIDDEN");
+    expect(await failure(members.updateMember(admin, id, editor, { role: "admin" }, db))).toBe("403 FORBIDDEN");
+    expect(await failure(members.updateMember(admin, id, outsider, { role: "viewer" }, db))).toBe("403 FORBIDDEN");
+    expect(await failure(members.removeMember(admin, id, outsider, db))).toBe("403 FORBIDDEN");
+    expect(await failure(members.removeMember(editor, id, admin, db))).toBe("403 FORBIDDEN");
+    await members.updateMember(owner, id, outsider, { role: "editor" }, db);
+
+    await members.removeMember(editor, id, editor, db);
+    expect(await failure(members.listMembers(editor, id, db))).toBe("404 NOT_FOUND");
+    expect(await failure(members.removeMember(viewer, id, admin, db))).toBe("404 NOT_FOUND");
   });
 });

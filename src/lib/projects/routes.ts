@@ -1,13 +1,15 @@
 import "server-only";
 import { NextResponse, type NextRequest } from "next/server";
 import { readJson } from "@/lib/auth/http";
+import { enforceSubjectLimit } from "@/lib/auth/rate-limit";
 import { validate } from "@/lib/auth/validation";
 import { apiJson, withApiRoute } from "@/lib/api/route";
 import { apiError, notFound } from "@/lib/api/errors";
-import { branchNameSchema, createBranchRequestSchema, blobQuerySchema, commitMetadataSchema, suggestionMetadataSchema, createProjectRequestSchema, idempotencyKeySchema, MAX_FILE_BYTES, MAX_FILES_PER_COMMIT, fullHashSchema, hashRefSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
+import { branchNameSchema, createBranchRequestSchema, blobQuerySchema, commitMetadataSchema, suggestionMetadataSchema, createProjectRequestSchema, updateProjectRequestSchema, addMemberRequestSchema, updateMemberRequestSchema, projectIdSchema, idempotencyKeySchema, MAX_FILE_BYTES, MAX_FILES_PER_COMMIT, fullHashSchema, hashRefSchema, historyQuerySchema, syncQuerySchema, updateBranchRequestSchema } from "@/lib/api/contract";
 import * as service from "./service";
 import { createCommit, type UploadedFile } from "./commit";
 import { suggestCommitMessage } from "./suggest";
+import * as members from "./members";
 
 // Route handlers for section 5 of docs/api-contract.md. Role checks live in the service.
 
@@ -147,6 +149,7 @@ export const handleCreateCommit = (request: NextRequest, { params }: Ctx<{ id: s
     if (key !== null && !idempotencyKeySchema.safeParse(key).success) {
       throw apiError("INVALID_REQUEST", "Idempotency-Key must be 8 to 128 letters, digits, '_' or '-'.");
     }
+    await enforceSubjectLimit("commit", caller.id);
     const { metadata, parts } = await readFilesForm(request, commitMetadataSchema);
     return apiJson(await createCommit(caller.id, id, metadata, parts, key), 201);
   });
@@ -155,6 +158,51 @@ export const handleCreateCommit = (request: NextRequest, { params }: Ctx<{ id: s
 export const handleSuggestCommitMessage = (request: NextRequest, { params }: Ctx<{ id: string }>) =>
   withApiRoute(request, async (caller) => {
     const { id } = await params;
+    await enforceSubjectLimit("suggest", caller.id);
     const { metadata, parts } = await readFilesForm(request, suggestionMetadataSchema);
     return apiJson(await suggestCommitMessage(caller.id, id, metadata, parts));
+  });
+
+export const handleUpdateProject = (request: NextRequest, { params }: Ctx<{ id: string }>) =>
+  withApiRoute(request, async (caller) => {
+    const { id } = await params;
+    const input = validate(updateProjectRequestSchema, await body(request));
+    return apiJson(await service.updateProject(caller.id, id, input));
+  });
+
+export const handleDeleteProject = (request: NextRequest, { params }: Ctx<{ id: string }>) =>
+  withApiRoute(request, async (caller) => {
+    await service.deleteProject(caller.id, (await params).id);
+    return new NextResponse(null, { status: 204 });
+  });
+
+// /api/projects/:id/members and /api/projects/:id/members/:userId
+
+const memberId = (value: string) => {
+  if (!projectIdSchema.safeParse(value).success) throw notFound("Member");
+  return value;
+};
+
+export const handleListMembers = (request: NextRequest, { params }: Ctx<{ id: string }>) =>
+  withApiRoute(request, async (caller) => apiJson(await members.listMembers(caller.id, (await params).id)));
+
+export const handleAddMember = (request: NextRequest, { params }: Ctx<{ id: string }>) =>
+  withApiRoute(request, async (caller) => {
+    const { id } = await params;
+    const input = validate(addMemberRequestSchema, await body(request));
+    return apiJson(await members.addMember(caller.id, id, input), 201);
+  });
+
+export const handleUpdateMember = (request: NextRequest, { params }: Ctx<{ id: string; userId: string }>) =>
+  withApiRoute(request, async (caller) => {
+    const { id, userId } = await params;
+    const input = validate(updateMemberRequestSchema, await body(request));
+    return apiJson(await members.updateMember(caller.id, id, memberId(userId), input));
+  });
+
+export const handleRemoveMember = (request: NextRequest, { params }: Ctx<{ id: string; userId: string }>) =>
+  withApiRoute(request, async (caller) => {
+    const { id, userId } = await params;
+    await members.removeMember(caller.id, id, memberId(userId));
+    return new NextResponse(null, { status: 204 });
   });

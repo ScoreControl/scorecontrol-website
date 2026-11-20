@@ -1,14 +1,14 @@
 import "server-only";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { getDb } from "@/lib/db";
-import { downloadBlob } from "@/lib/storage";
+import { deleteProjectBlobs, downloadBlob } from "@/lib/storage";
 import { apiError, notFound } from "@/lib/api/errors";
 import { requireProjectRole } from "@/lib/api/roles";
 import { AuthHttpError } from "@/lib/auth/errors";
 import {
   DEFAULT_BRANCH, type Branch, type CreateProjectResponse, type GetProjectResponse, type ListBranchesResponse,
   type ListProjectsResponse, type Project, type CommitSummary, type CommitFile, type CommitDetailResponse, type HistoryResponse, SHORT_HASH_LENGTH, type historyQuerySchema, type ProjectRole, type SyncRelation, type SyncResponse,
-  type createBranchRequestSchema, type createProjectRequestSchema, type syncQuerySchema,
+  type createBranchRequestSchema, type createProjectRequestSchema, type updateProjectRequestSchema, type syncQuerySchema,
 } from "@/lib/api/contract";
 import type { z } from "zod";
 
@@ -303,4 +303,24 @@ export async function getBlob(userId: string, projectId: string, sha256: string,
   });
   if (!blob) throw notFound("File");
   return { sha256: blob.sha256, size: blob.sizeBytes, contentType: blob.contentType, bytes: await download(blob.storagePath) };
+}
+
+// ─── Project settings and deletion ──────────────────────────────────────────
+
+/** Admin and up. Renames or re-describes; the slug stays fixed so plugin links keep working. */
+export async function updateProject(userId: string, projectId: string, input: z.output<typeof updateProjectRequestSchema>, db: Db = getDb()): Promise<{ project: Project }> {
+  const { role } = await requireProjectRole(userId, projectId, "admin", db);
+  const row = await db.project.update({
+    where: { id: projectId },
+    data: { ...(input.name !== undefined ? { name: input.name } : {}), ...(input.description !== undefined ? { description: input.description } : {}) },
+    include: { defaultBranch: { select: { name: true } } },
+  });
+  return { project: toProject(row, role) };
+}
+
+/** Owner only. Deletes the project, its history, and (best effort, afterwards) its stored files. */
+export async function deleteProject(userId: string, projectId: string, db: Db = getDb(), removeFiles: (projectId: string) => Promise<void> = deleteProjectBlobs) {
+  await requireProjectRole(userId, projectId, "owner", db);
+  await db.project.delete({ where: { id: projectId } });
+  await removeFiles(projectId).catch(() => {});
 }

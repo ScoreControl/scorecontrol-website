@@ -91,6 +91,13 @@ describe("auth rate limiting", () => {
     await expect(enforceSubjectLimit("login", " Person@Example.com ")).rejects.toMatchObject({ status: 429 });
     await expect(enforceSubjectLimit("login", "other@example.com")).resolves.toBeUndefined();
   });
+  it("limits commits and suggestions per user id, separately", async () => {
+    const { enforceSubjectLimit } = await import("@/lib/auth/rate-limit");
+    for (let n = 0; n < 60; n++) await enforceSubjectLimit("commit", "user-1");
+    await expect(enforceSubjectLimit("commit", "user-1")).rejects.toMatchObject({ status: 429, code: "RATE_LIMITED" });
+    await expect(enforceSubjectLimit("suggest", "user-1")).resolves.toBeUndefined();
+    await expect(enforceSubjectLimit("commit", "user-2")).resolves.toBeUndefined();
+  });
   it("converts SDK timeouts into an outage instead of allowing a login", async () => {
     vi.stubEnv("UPSTASH_REDIS_REST_URL", "https://redis.example");
     vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "test-token");

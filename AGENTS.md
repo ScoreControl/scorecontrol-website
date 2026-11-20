@@ -92,6 +92,7 @@ Known risks and traps. Update or remove an item when it's resolved.
 
 Newest first.
 
+- **2026-11-13, `feat/backend-basics` (Guy):** Per-user rate limits on commits and suggestions (60 per 5 min each, plus per-IP and global ceilings); `PATCH /api/projects/:id` (rename, slug fixed) and owner-only `DELETE` with best-effort Storage cleanup (`deleteProjectBlobs`); member routes in `src/lib/projects/members.ts` (admins manage editors/viewers, only the owner manages admins, anyone can leave; new error `MEMBER_EXISTS`). Contract section 9a. 324/324 tests pass.
 - **2026-11-13, `feat/plugin-api` (Guy):** Added CI (`.github/workflows/ci.yml`: prisma validate, lint, typecheck, tests, build; no secrets, placeholder env for the build) and `tests/api/http.test.ts`, which drives every project route through its real route module (auth wrapper, multipart, catch-all, base64) on PGlite with only Supabase faked. Every commit on the branch passes the suite. 318/318 tests pass.
 - **2026-11-13, `feat/plugin-api` (Guy):** Added `POST /api/projects/:id/commit-message-suggestions` (contract section 9) with a free rule-based writer (`src/lib/suggestions/`, model `scorecontrol/rules-v1`): a regex MusicXML outline (title, parts, measures) and a measure-level diff produce messages like "Edit bars 2–3 in Violin; add 1 measure". Compressed `.mxl`/`.mscz` get "Update <path>". No LLM yet (decision: free first; Claude Haiku 5.5 later behind `suggestCommitMessage`, falling back to the rules). Not done: per-user rate limit and daily cost cap (not needed until an LLM is added). 316/316 tests pass.
 - **2026-11-13, `feat/plugin-api` (Guy):** Added `POST /api/projects/:id/commits` (contract section 7) in `src/lib/projects/commit.ts`: multipart snapshot, server-computed blob and commit hashes, branch row locked `FOR UPDATE`, `409 STALE_PARENT` with `commitsAhead`, `newBranch` forks, `422 NO_CHANGES`, and `Idempotency-Key` replay (24 h) stored in the same transaction. Blobs upload to Storage before the transaction (content-addressed, so a rollback only leaves unused bytes). Not done: background parsing into `parsed_ast` (no parser yet). Gotcha: `@prisma/adapter-pg` misreads `timestamptz` values with a non-UTC offset; Supabase runs in UTC, and the PGlite tests now pin UTC. Watch-out: Vercel caps request bodies at 4.5 MB, so large commits will need direct-to-Storage uploads before deploying there. 310/310 tests pass.
@@ -121,26 +122,25 @@ Newest first.
 - **2026-10-20, `user-auth` (Oliver van der Kouwe):** Supabase cookie-session auth API (signup, login, logout, me, username, password reset/change, email confirm). Added a private `scorecontrol_auth.usernames` registry with a signup trigger and service-role RPCs, Upstash rate limiting, Vitest and Playwright suites, and `docs/AUTH_API.md` and `docs/ENVIRONMENT.md`. Not merged to `main` yet.
 - **2026-10-15, `main` (Guy):** Scaffolded Next.js 16 with TypeScript, Tailwind, and ESLint. Added Supabase and Prisma 7 (pinned), the Prisma client generated on install, the Supabase CLI linked to the hosted project, the env template, Node engine versions, and README setup instructions.
 
-## Current branch TODOs: `main`
+## Current branch TODOs: `feat/backend-basics`
 
-- [ ] Review `docs/api-contract.md` with the plugin developer and Ryan; open the PR.
-- [ ] Apply to the hosted project: `npx supabase db push --linked` (the `20261105000000_blobs_bucket` migration is already applied), then `npx prisma migrate deploy` (applies `20261105000000_plugin_api`; init migrations were applied 2026-10-29).
-- [ ] Optional: switch the hosted project to asymmetric JWT signing keys, then verify bearer tokens locally with `getClaims`.
-- [x] Project and branch routes (contract section 5).
-- [x] Sync route (contract section 6).
-- [x] History, commit detail, and blob download routes (contract section 8).
-- [x] Commit route with concurrency test (contract section 7).
-- [x] Commit message suggestions, rule-based (contract section 9).
-- [x] CI and end-to-end route tests.
-- [ ] Next steps (plan order): PR for `feat/plugin-api` → optional LLM suggestions (Claude Haiku 5.5, needs an API key).
+- [x] Plugin API (contract sections 5–9), CI, end-to-end route tests (merged in PR #10).
+- [x] Hosted database migrations applied (2026-11-12; `prisma migrate status` up to date).
+- [x] Rate limits on commits and suggestions; project rename and delete; member routes (contract 9a).
+- [ ] Open a PR for `feat/backend-basics` → `main`.
+- [ ] Review `docs/api-contract.md` (including 9a) with the plugin developer and Ryan.
+- [ ] Deploy: pick a host. Vercel caps request bodies at 4.5 MB, so either host elsewhere (Render, Fly, Railway) or add direct-to-Storage signed uploads (a contract change for the plugin).
+- [ ] Production env: Upstash Redis (required in production), `SUPABASE_SECRET_KEY`, `APP_ORIGIN`, `DATABASE_URL`; add the production `/auth/confirm` URL to Supabase redirect URLs.
+- [ ] Custom SMTP before launch (Supabase's built-in email is heavily rate-limited; Resend free tier needs a verified domain).
+- [ ] Optional LLM suggestions (Claude Haiku 5.5, needs an API key; retry with backoff, fall back to the rules).
 - [ ] Guy: create the Google OAuth client (redirect URI `https://<project-ref>.supabase.co/auth/v1/callback`) and enable Google in Supabase → Authentication → Sign In / Providers.
 - [ ] Guy: add `http://localhost:3000/auth/confirm` to Supabase → Authentication → URL Configuration → Redirect URLs.
-- [ ] Ryan: add `<a href="/api/auth/oauth/google">Continue with Google</a>` to the login and signup pages, and a username form for accounts where `/api/auth/me` returns `username: null`.
+- [ ] Ryan: Google button, username form, and the project, history, members, and settings pages.
 
 ## Backlog
 
 - [ ] Delete the merged `user-auth` and `setup` branches (ask first).
 - [ ] Archive Ryan's superseded `ui/ux-designs` branch (ask Ryan).
 - [ ] Ask Oliver to fix the flaky test in `tests/auth/supabase-sdk.test.ts:196`.
-- [ ] Custom SMTP before launch (Resend free tier needs a verified domain).
-- [ ] Project/upload/commit/history/branch API routes (100 files per project).
+- [ ] Enforce 100 files per project (today: 100 per commit), if the team still wants it.
+- [ ] Account deletion route (the users trigger already cascades projects).
